@@ -65,7 +65,7 @@ ekrana basar, hiçbir karar vermez (`base.md:8-38`).
 │      TX: UBX pad-konfig (kesmesiz IT, tek kare). RX: NMEA + UBX ACK/NAK.       │
 │                                                                                │
 │  USART1  PB6(TX)/PB7(RX) AF7  9600 8N1 ──► LoRa E220-900T22D (7 pin)           │
-│      Kesme YOK; sınırlı-blokeli TX (50 ms), 500/1000 ms kadans.               │
+│      Kesme YOK; sınırlı-blokeli TX (50 ms), 100 ms kadans (10 Hz).            │
 │      M0=PB10, M1=PA8 (çıkış), AUX=PA9 (giriş). Tek yön: ROKET ──► HAVA.       │
 │                                                                                │
 │  I2C1  PB8(SCL)/PB9(SDA) ──► MPU6050 (0x68) + BMP280#1 (0x76) + BMP280#2 (0x77) │
@@ -74,7 +74,7 @@ ekrana basar, hiçbir karar vermez (`base.md:8-38`).
 │                                                                                │
 │  = UÇUŞUN TAMAMI BURADA. Tek muhafız, tek karar merkezi.                        │
 └───────────────────────────────────┬────────────────────────────────────────────┘
-                                    │  900 MHz LoRa, 33 bayt hava / 500 ms
+                                    │  900 MHz LoRa, 41 bayt hava / 100 ms
                                     │  (tek yönlü: roket → istasyon, ACK yok)
                                     ▼
 ┌────────────────────── Arduino UNO (YER İSTASYONU, yalnızca alıcı) ────────────┐
@@ -91,11 +91,11 @@ ekrana basar, hiçbir karar vermez (`base.md:8-38`).
 Veri yönleri:
 
 - STM32 → PC (USART2): Ek-7 ikili çerçeveler (SIT/SUT) veya metin TUI (NORMAL). Hız: SIT/SUT 10 Hz
-  (`Src/main.c:226` `EK7_TX_PERIOD_MS`), TUI 50 ms periyotlu metin karesi.
+  (`Src/main.c` `EK7_TX_PERIOD_MS`), TUI 100 ms periyotlu metin karesi.
 - PC → STM32 (USART2): Ek-7 komutları `AA CMD SUM 0D 0A` (`Src/ek7.c:61-131`).
 - STM32 → GPS (USART6 TX/PC6): 8 UBX konfig çerçevesi, pad'de, boot'ta (`Src/gps.c:768-817`).
 - GPS → STM32 (USART6 RX/PC7): NMEA (GGA+RMC) + UBX ACK/NAK.
-- STM32 → hava (USART1): 33 baytlık LoRa hava imajı, 500 ms (uçuş) / 1000 ms (`WAIT_FOR_LAUNCH`).
+- STM32 → hava (USART1): 41 baytlık LoRa hava imajı (3 bayt başlık + 38 bayt V3), 100 ms kadans (10 Hz).
 - Hava → Uno (D2): aynı imaj; Uno magic-senkronla yakalar (`uno_lora_rx/uno_lora_rx.ino:411-434`).
 
 Tasarım sözleşmeleri (`base.md:35-38`):
@@ -879,25 +879,25 @@ Mimari ve pin sözleşmesi `base.md`'de sabittir; aşağıdakiler yalnızca saha
 | Bayt | Değer | Açılım |
 |---|---|---|
 | ADDH / ADDL | `00 00` | adres 0x0000, şeffaf modda filtre yok |
-| REG0 | `0x65` | 9600 8N1 + 19,2k hava hızı |
+| REG0 | `0x63` | 9600 8N1 + 4.8k hava hızı |
 | REG1 | `0x00` | 200 B alt-paket, RSSI kapalı, 22 dBm |
 | REG2 | `0x17` | CH 23, 873.125 MHz |
 | REG3 | `0x00` | şeffaf iletim, LBT yok |
 
-Tam imaj: `00 00 65 00 17 00`. Mode 0 (M0=0/M1=0) = çalışma, Mode 3 (M0=1/M1=1) = konfig.
+Tam imaj: `00 00 63 00 17 00`. Mode 0 (M0=0/M1=0) = çalışma, Mode 3 (M0=1/M1=1) = konfig.
 
 ### 10.2 Boot kanıt satırları (örnek format, değerleri sahada okunur)
 
 STM32 VCOM (115200), reset sonrası ilk satırlardan:
 
 ```
-LORA CFG: OK AUX=1 B=9600 RD=00 00 65 00 17 00 ST=4 W=-
+LORA CFG: OK AUX=1 B=9600 RD=00 00 63 00 17 00 ST=4 W=-
 ```
 
 Uno seri monitör (115200), reset sonrası:
 
 ```
-LORA CFG read: 00 00 65 00 17 00
+LORA CFG read: 00 00 63 00 17 00
 LORA CFG: OK
 ```
 

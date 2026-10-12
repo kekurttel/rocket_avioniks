@@ -156,7 +156,7 @@ static float drop_delta_m = 0.0f;
 static float drop_gate_m = 0.0f;
 static uint32_t last_tui_ms = 0;
 /* Ek-7 cerceve zamanlayicisi (SIT telemetri + SUT durum). TUI'dan ayri:
- * TUI 50 ms, Ek-7 Tablo 2-6 100 ms (10 Hz). */
+ * TUI 100 ms, Ek-7 Tablo 2-6 100 ms (10 Hz). */
 static uint32_t last_ek7_tx_ms = 0;
 static uint32_t last_dbg_ms = 0;
 /* Filtered pressure for altitude (float, FPU present). */
@@ -218,11 +218,9 @@ static uint32_t sut_last_ms = 0;
  * seviyeye indirir. */
 #define EK7_ACTIVATE_MS (200u)
 /* Ek-7 TX periodi: Tablo 2/3/4 ve Tablo 5/6 her iki cerceve icin de
- * 10 Hz (100 ms) diyor. Once SIT/SUT dali TUI kapiyla (last_tui_ms, 50 ms)
- * paylasiyordu ve ana dongu ~17 Hz oldugu icin telemetri ~17 Hz aktardi;
- * resmi test araci 10 Hz bekliyor ve RX sayaci 17 gosteriyordu. Artik
- * Ek-7 dali kendi zamanlayicisini kullanir; TUI 50 ms'de bir guncellenmeye
- * devam eder (NORMAL mod metin ekrani, Ek-7 cercevesi uretmez). */
+ * 10 Hz (100 ms) diyor. Ek-7 dali kendi zamanlayicisini kullanir; TUI
+ * 100 ms kapiyla guncellenmeye devam eder (NORMAL mod metin ekrani,
+ * Ek-7 cercevesi uretmez). */
 #define EK7_TX_PERIOD_MS (100u)
 /* Synthetic plausibility envelope (outside -> sample invalid, no feed). */
 #define SUT_ALT_MIN_M (-1000.0f)
@@ -331,7 +329,8 @@ static uint32_t gps_cfg_retry_gap = GPS_CFG_RETRY_BASE_MS;
 static uint8_t gps_cfg_retry_n = 0;
 /* LoRa telemetry uplink (Ebyte E220-900T22D, transparent UART on USART1
  * PB6/PB7 AF7 - NOT PA9/PA10, because PA10 is the BLUE LED). One bounded
- * 30-byte packet per lora_poll() on the 500/1000 ms cadence. Strictly a
+ * 41-byte air packet (3-byte fixed header + 38-byte V3 core) per lora_poll()
+ * on the 100 ms cadence. Strictly a
  * reader: it cannot touch flight state.
  * NOTE: `huart1` is DEFINED above next to huart2/huart6 (CubeMX convention),
  * not declared extern here - a second definition would be a duplicate
@@ -2412,7 +2411,8 @@ int main(void)
       lora_lt.flight_state = (uint16_t)flight.state;
       lora_lt.ek7_mode = (uint16_t)ek7_mode;
       /* alt_m is the SAME fused-P0 barometric altitude the flight machine
-       * uses this iteration; whole metres on the wire, 0x8000 when invalid. */
+       * uses this iteration; V3 carries it as signed decimetres (0.1 m),
+       * INT32_MIN when invalid. */
       lora_lt.alt_m = alt_m;
       lora_lt.alt_valid = alt_valid;
       lora_lt.vel_mps = flight.vel_mps;
@@ -2474,12 +2474,11 @@ int main(void)
     tim_end(TIM_PROC);
     tim_begin(TIM_TX);
     /* AUX-dusuk sure olcumu (sadece TUI tanisi; ucus/sensor/LoRa-GPS/Ek-7'ye etkisi yok):
-     * Modul config'e cevap vermiyor, gercek hava hizi bilinmiyor (2,4k mi 19,2k mi?).
-     * Ama her TX sonrasi AUX duser; dusuk kalis suresi hava suresini ele verir
-     * (2,4k->~170ms, 19,2k->~30ms). Her dongude tek okuma + karsilastirma, bekleme yok.
+     * Her TX sonrasi AUX duser; dusuk kalis suresi hava suresini ele verir
+     * (4.8k->~70ms). Her dongude tek okuma + karsilastirma, bekleme yok.
      * LORA_AUX_GPIO_Port/Pin lora.h'tan gelir (main.c zaten include eder) ve pinin
      * giris olarak kuruldugu MX_GPIO_Init'te gorulur; erisim dogrulandi.
-     * Kesinlik: HAL_GetTick 1ms cozunurluklu, 30ms/170ms ayirimi icin yeterli.
+     * Kesinlik: HAL_GetTick 1ms cozunurluklu, ~70ms olcumu icin yeterli.
      * Surekli dusuk kalan (yukselmeyen) AUX'da olcum uretilmez, sahte veri basilmaz. */
     static bool aux_init = false;
     static bool aux_prev_hi = true;
@@ -2527,7 +2526,7 @@ int main(void)
     }
     if (sit_active || (ek7_mode == EK7MODE_SUT))
     {
-      /* Ek-7 10 Hz gate (own timer; the TUI gate is a separate 50 ms tick). */
+      /* Ek-7 10 Hz gate (own timer; the TUI gate is a separate 100 ms tick). */
       if ((HAL_GetTick() - last_ek7_tx_ms) >= EK7_TX_PERIOD_MS)
       {
         last_ek7_tx_ms = HAL_GetTick();
@@ -2564,11 +2563,14 @@ int main(void)
       }
     }
     else
-    /* --- Live TUI every ~50 ms (elapsed time, not loop count).
+    /* --- Live TUI every ~100 ms (elapsed time, not loop count).
            Clear + home (+hide cursor) redraws the same block in place;
            idempotent, so a late-attaching terminal renders cleanly.
-           No system("clear"), no shell: MCU-side ANSI only. --- */
-    if ((HAL_GetTick() - last_tui_ms) >= 50U)
+           100 ms keeps the terminal live while leaving the 100 ms LoRa
+           cadence affordable (a worst-case ~950 B frame costs ~85 ms
+           of blocking UART time at 115200). No system("clear"), no shell:
+           MCU-side ANSI only. --- */
+    if ((HAL_GetTick() - last_tui_ms) >= 100U)
     {
       last_tui_ms = HAL_GetTick();
       tui_begin(); /* stage the whole frame; one transmit at tui_flush() */
@@ -2986,13 +2988,21 @@ int main(void)
       b1_prev = pressed;
     }
 
-    /* Idle pacing. NORMAL: 50 ms (~17 Hz loop) -> the live TUI redraws at
-     * that rate. SIT/SUT: 5 ms, so the Ek-7 100 ms gate can actually be
-     * hit on time (a 50 ms idle quantises a 100 ms period into 100/150 ms
-     * steps and measured 8.9 Hz instead of 10 Hz). Frame TIMING only: the
-     * sensor path itself is untouched, and SUT still steps once per frame
-     * (see sut_step), never per loop. */
-    HAL_Delay((ek7_mode == EK7MODE_NORMAL) ? 50 : 5);
+    /* Idle pacing. NORMAL: 10 ms loop so the 100 ms LoRa deadline is met
+     * with margin: a transmitting iteration costs ~10 (idle) + ~15 (work,
+     * amortised TUI at the 100 ms gate below) + ~43 ms (41 B @9600 UART),
+     * i.e. ~70-90 ms, so the 10 Hz deadline fires every tick. TUI refreshes
+     * at its own 100 ms gate (still live). SIT/SUT: 5 ms, so the Ek-7
+     * 100 ms gate can actually be hit on time (a 50 ms idle quantises a
+     * 100 ms period into 100/150 ms steps and measured 8.9 Hz instead of
+     * 10 Hz). Frame TIMING only: the sensor path itself is untouched, and
+     * SUT still steps once per frame (see sut_step), never per loop.
+     * Flight uses measured dt (dt_flight), launch/free-fall streaks span
+     * seconds, and the DROP baseline EMA (AVT_DROP_REF_ALPHA) has a
+     * tens-of-seconds time constant (tau = loop period / alpha) against
+     * descent timescales of seconds: the faster loop does not change
+     * flight decisions, only their latency (shorter). */
+    HAL_Delay((ek7_mode == EK7MODE_NORMAL) ? 10 : 5);
   }
   /* USER CODE END 3 */
 }

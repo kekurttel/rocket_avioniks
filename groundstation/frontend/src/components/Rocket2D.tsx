@@ -96,7 +96,7 @@ export default function Rocket2D(props: Rocket2DProps) {
   const tone = flightStateTone(durum);
   const toneSuffix = tone === "neutral" ? "" : ` bz-footnote__state--${tone}`;
 
-  const aria = `Roket yan görünümü: irtifa ${
+  const aria = `Roket yan görünümü: göreli irtifa ${
     alt !== null ? `${alt.toFixed(0)} metre` : "bilinmiyor"
   }, uçuş durumu ${flightStateName(durum)}, yönelim ${
     yonVar ? "yaklaşık (ivmeölçer)" : "veri yok, nötr poz"
@@ -116,7 +116,7 @@ export default function Rocket2D(props: Rocket2DProps) {
         {red && <span className="bz-chip bz-chip--warning">Menzil dışı · reddedildi</span>}
         {olcekUstu && <span className="bz-chip bz-chip--caution">Ölçek üstü</span>}
         <span className="bz-panel__meta">
-          Rakım: {alt !== null ? `${alt.toFixed(1)} m` : "—"}
+          Göreli irtifa: {alt !== null ? `${alt.toFixed(1)} m` : "—"}
           {yonVar && egikDeg !== null ? ` · eğik ${egikDeg.toFixed(1)}°` : ""}
         </span>
       </header>
@@ -237,7 +237,7 @@ export default function Rocket2D(props: Rocket2DProps) {
           : ""}
         {yonVar
           ? "Eğilme yaklaşık yönelimdir (ivmeölçer, yaw yok); derinlikteki bileşen boy kısalması olarak çizilir. Sağ alttaki ok eğilme yönünü üstten bakışla gösterir (ok boyu sabit, derece gerçektir); gövde küçük açılarda neredeyse dikey kalır."
-          : "Pakette canlı yönelim (attitude) alanı bulunmadığı için model nötr pozda durur; yalnızca irtifaya göre yükselir."}
+          : "Göreli irtifa kalkış noktasının kalibre edilmiş barometrik basıncına göredir (deniz seviyesi rakımı değildir). Paket canlı yönelim taşımıyorsa model nötr pozda durur; yalnızca irtifaya göre yükselir."}
       </p>
     </section>
   );

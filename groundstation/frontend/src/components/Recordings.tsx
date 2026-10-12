@@ -202,7 +202,7 @@ export function Recordings({
                       <th scope="col">seq</th>
                       <th scope="col">T+ (ms)</th>
                       <th scope="col">Uçuş durumu</th>
-                      <th scope="col">İrtifa (m)</th>
+                      <th scope="col">Göreli irtifa (m)</th>
                       <th scope="col">Hız (m/s)</th>
                       <th scope="col">Uydu</th>
                       <th scope="col">Fix</th>
@@ -214,7 +214,7 @@ export function Recordings({
                         <td>{r.seq ?? "—"}</td>
                         <td>{r.t_ms ?? "—"}</td>
                         <td>{flightStateName(r.flight_state)}</td>
-                        <td>{fixed(r.alt_m, 2)}</td>
+                        <td>{fixed(r.alt_m, 1)}</td>
                         <td>{r.vel_cms === null ? "—" : (r.vel_cms / 100).toFixed(2)}</td>
                         <td>{r.sats ?? "—"}</td>
                         <td>{r.fix === null ? "—" : r.fix ? "VAR" : "YOK"}</td>

@@ -127,18 +127,16 @@ size_t lora_build(uint8_t *out, size_t cap, const lora_frame_t *in)
   put_u32(out, LORA_OFF_T_MS, in->t_ms);
   put_u16(out, LORA_OFF_FLIGHT_STATE, in->flight_state);
   put_u16(out, LORA_OFF_EK7_MODE, in->ek7_mode);
-  put_i16(out, LORA_OFF_ALT_M, in->alt_m);
+  put_i32(out, LORA_OFF_ALT_DM, in->alt_dm);
   put_i16(out, LORA_OFF_VEL_CMS, in->vel_cms);
   put_u16(out, LORA_OFF_SATS, in->sats);
   put_i32(out, LORA_OFF_LAT_E5, in->lat_e5);
   put_i32(out, LORA_OFF_LON_E5, in->lon_e5);
   put_u16(out, LORA_OFF_BATT_MV, in->batt_mv);
   put_u8(out, LORA_OFF_FLAGS, in->flags);
-  /* v2 ek alanlar: tilt decidegree + govde egilme yonu. */
   put_u16(out, LORA_OFF_TILT, in->tilt_ddeg);
   put_i16(out, LORA_OFF_LEANX, in->lean_x);
   put_i16(out, LORA_OFF_LEANY, in->lean_y);
-  /* CRC, 0..34 arasi tum yazilan baytlari kapsar. */
   put_u8(out, LORA_OFF_CRC, lora_crc(out, LORA_CRC_OFF));
   return LORA_FRAME_LEN;
 }
@@ -170,61 +168,107 @@ size_t lora_build_air(uint8_t *out, size_t cap, const lora_frame_t *in)
 }
 #endif
 
+static uint16_t read_u16_le(const uint8_t *f, size_t off)
+{
+  return (uint16_t)((uint16_t)f[off] | ((uint16_t)f[off + 1u] << 8));
+}
+
+static uint32_t read_u32_le(const uint8_t *f, size_t off)
+{
+  return (uint32_t)f[off] | ((uint32_t)f[off + 1u] << 8) |
+         ((uint32_t)f[off + 2u] << 16) | ((uint32_t)f[off + 3u] << 24);
+}
+
 bool lora_verify(const uint8_t *f, size_t n)
 {
-  if (f == NULL || n != LORA_FRAME_LEN)
+  size_t expected;
+  if (f == NULL || n < 2u || f[0] != LORA_MAGIC)
   {
     return false;
   }
-  if (f[LORA_OFF_MAGIC] != LORA_MAGIC || f[LORA_OFF_VER] != LORA_VER)
+  switch (f[1])
+  {
+    case LORA_VER_V1: expected = LORA_V1_FRAME_LEN; break;
+    case LORA_VER_V2: expected = LORA_V2_FRAME_LEN; break;
+    case LORA_VER_V3: expected = LORA_V3_FRAME_LEN; break;
+    default: return false;
+  }
+  if (n != expected)
   {
     return false;
   }
-  /* Additive checksum: recomputing over 0..28 must reproduce byte 29. */
-  return lora_crc(f, LORA_CRC_OFF) == f[LORA_OFF_CRC];
+  /* Every supported version stores the additive CRC as its final byte. */
+  return lora_crc(f, n - 1u) == f[n - 1u];
+}
+
+static int16_t dm_to_m_compat(int32_t dm)
+{
+  int64_t m;
+  if (dm == LORA_ALT_DM_INVALID)
+  {
+    return LORA_ALT_INVALID;
+  }
+  m = (dm >= 0) ? ((int64_t)dm + 5) / 10 : ((int64_t)dm - 5) / 10;
+  if (m < -32767 || m > 32767)
+  {
+    return LORA_ALT_INVALID; /* legacy whole-metre view cannot represent it */
+  }
+  return (int16_t)m;
 }
 
 bool lora_parse(const uint8_t *f, size_t n, lora_frame_t *out)
 {
+  uint8_t ver;
+  int16_t legacy_alt;
   if (out == NULL || !lora_verify(f, n))
   {
     return false;
   }
-  out->seq = (uint16_t)((uint16_t)f[LORA_OFF_SEQ] |
-                        ((uint16_t)f[LORA_OFF_SEQ + 1u] << 8));
-  out->t_ms = (uint32_t)f[LORA_OFF_T_MS] | ((uint32_t)f[LORA_OFF_T_MS + 1u] << 8) |
-              ((uint32_t)f[LORA_OFF_T_MS + 2u] << 16) |
-              ((uint32_t)f[LORA_OFF_T_MS + 3u] << 24);
-  out->flight_state =
-      (uint16_t)((uint16_t)f[LORA_OFF_FLIGHT_STATE] |
-                 ((uint16_t)f[LORA_OFF_FLIGHT_STATE + 1u] << 8));
-  out->ek7_mode = (uint16_t)((uint16_t)f[LORA_OFF_EK7_MODE] |
-                             ((uint16_t)f[LORA_OFF_EK7_MODE + 1u] << 8));
-  out->alt_m = (int16_t)(uint16_t)((uint16_t)f[LORA_OFF_ALT_M] |
-                                    ((uint16_t)f[LORA_OFF_ALT_M + 1u] << 8));
-  out->vel_cms = (int16_t)(uint16_t)((uint16_t)f[LORA_OFF_VEL_CMS] |
-                                     ((uint16_t)f[LORA_OFF_VEL_CMS + 1u] << 8));
-  out->sats = (uint16_t)((uint16_t)f[LORA_OFF_SATS] |
-                         ((uint16_t)f[LORA_OFF_SATS + 1u] << 8));
-  out->lat_e5 =
-      (int32_t)((uint32_t)f[LORA_OFF_LAT_E5] |
-                ((uint32_t)f[LORA_OFF_LAT_E5 + 1u] << 8) |
-                ((uint32_t)f[LORA_OFF_LAT_E5 + 2u] << 16) |
-                ((uint32_t)f[LORA_OFF_LAT_E5 + 3u] << 24));
-  out->lon_e5 =
-      (int32_t)((uint32_t)f[LORA_OFF_LON_E5] |
-                ((uint32_t)f[LORA_OFF_LON_E5 + 1u] << 8) |
-                ((uint32_t)f[LORA_OFF_LON_E5 + 2u] << 16) |
-                ((uint32_t)f[LORA_OFF_LON_E5 + 3u] << 24));
-  out->batt_mv = (uint16_t)((uint16_t)f[LORA_OFF_BATT_MV] |
-                            ((uint16_t)f[LORA_OFF_BATT_MV + 1u] << 8));
-  out->flags = f[LORA_OFF_FLAGS];
-  out->tilt_ddeg = (uint16_t)((uint16_t)f[LORA_OFF_TILT] |
-                              ((uint16_t)f[LORA_OFF_TILT + 1u] << 8));
-  out->lean_x = (int16_t)(uint16_t)((uint16_t)f[LORA_OFF_LEANX] |
-                                    ((uint16_t)f[LORA_OFF_LEANX + 1u] << 8));
-  out->lean_y = (int16_t)(uint16_t)((uint16_t)f[LORA_OFF_LEANY] |
-                                    ((uint16_t)f[LORA_OFF_LEANY + 1u] << 8));
+  ver = f[1];
+  out->seq = read_u16_le(f, 2u);
+  out->t_ms = read_u32_le(f, 4u);
+  out->flight_state = read_u16_le(f, 8u);
+  out->ek7_mode = read_u16_le(f, 10u);
+
+  if (ver == LORA_VER_V3)
+  {
+    out->alt_dm = (int32_t)read_u32_le(f, 12u);
+    out->alt_m = dm_to_m_compat(out->alt_dm);
+    out->vel_cms = (int16_t)read_u16_le(f, 16u);
+    out->sats = read_u16_le(f, 18u);
+    out->lat_e5 = (int32_t)read_u32_le(f, 20u);
+    out->lon_e5 = (int32_t)read_u32_le(f, 24u);
+    out->batt_mv = read_u16_le(f, 28u);
+    out->flags = f[30u];
+    out->tilt_ddeg = read_u16_le(f, 31u);
+    out->lean_x = (int16_t)read_u16_le(f, 33u);
+    out->lean_y = (int16_t)read_u16_le(f, 35u);
+    return true;
+  }
+
+  /* Legacy V1/V2 retain their original i16 whole-metre wire field and offsets. */
+  legacy_alt = (int16_t)read_u16_le(f, 12u);
+  out->alt_m = legacy_alt;
+  out->alt_dm = (legacy_alt == LORA_ALT_INVALID)
+                   ? LORA_ALT_DM_INVALID : (int32_t)legacy_alt * 10;
+  out->vel_cms = (int16_t)read_u16_le(f, 14u);
+  out->sats = read_u16_le(f, 16u);
+  out->lat_e5 = (int32_t)read_u32_le(f, 18u);
+  out->lon_e5 = (int32_t)read_u32_le(f, 22u);
+  out->batt_mv = read_u16_le(f, 26u);
+  out->flags = f[28u];
+  if (ver == LORA_VER_V2)
+  {
+    out->tilt_ddeg = read_u16_le(f, 29u);
+    out->lean_x = (int16_t)read_u16_le(f, 31u);
+    out->lean_y = (int16_t)read_u16_le(f, 33u);
+  }
+  else
+  {
+    out->tilt_ddeg = LORA_TILT_INVALID;
+    out->lean_x = 0;
+    out->lean_y = 0;
+  }
   return true;
 }
 
@@ -246,11 +290,26 @@ static int16_t m_to_m_i16(float m, bool valid)
   return (int16_t)((m >= 0.0f) ? (m + 0.5f) : (m - 0.5f));
 }
 
-/* m/s -> cm/s (int16). Gecerli aralik -32767..+32767 cm/s; aralikta KESME
- * (eski davranis aynen, yuvarlama YOK). x100 carpimi tasmis (inf) ya da
- * araliga sigmayan her deger LORA_I16_INVALID verir; doyurma YOK.
- * Daraltma noktasinda deger her zaman aralikta oldugu icin tanimsiz
- * davranis uretilemez. */
+/* Metres -> signed decimetres (V3). This carries launch-relative altitude to
+ * 0.1 m while retaining an explicit invalid sentinel and the backend's 100 km
+ * physical envelope. Rounding is symmetric (half away from zero). */
+static int32_t m_to_dm_i32(float m, bool valid)
+{
+  float dm;
+  if (!valid || !isfinite(m) || m > 100000.0f || m < -100000.0f)
+  {
+    return LORA_ALT_DM_INVALID;
+  }
+  dm = m * 10.0f;
+  if (!isfinite(dm) || dm >= 1000000.5f || dm <= -1000000.5f)
+  {
+    return LORA_ALT_DM_INVALID;
+  }
+  return (int32_t)((dm >= 0.0f) ? (dm + 0.5f) : (dm - 0.5f));
+}
+
+/* m/s -> cm/s (int16), truncation preserved from V2. Out-of-range,
+ * non-finite, and overflowed values produce the explicit invalid sentinel. */
 static int16_t m_to_cm_i16(float m, bool valid)
 {
   float cm;
@@ -277,7 +336,8 @@ void lora_frame_from_tlm(lora_frame_t *out, uint16_t seq, uint32_t t_ms,
   out->t_ms = t_ms;
   out->flight_state = in->flight_state;
   out->ek7_mode = in->ek7_mode;
-  out->alt_m = m_to_m_i16(in->alt_m, in->alt_valid);
+  out->alt_m = m_to_m_i16(in->alt_m, in->alt_valid); /* legacy/test view */
+  out->alt_dm = m_to_dm_i32(in->alt_m, in->alt_valid);
   out->vel_cms = m_to_cm_i16(in->vel_mps, in->vel_valid);
   /* Satellites are ALWAYS passed through, fix or no fix: the ground
    * station watches sats climb 0 -> 5 -> 8 while the antenna hunts the
@@ -349,10 +409,8 @@ uint32_t lora_interval_ms(uint16_t flight_state)
   uint32_t ms = (flight_state == flight_wait_for_launch)
                     ? LORA_SEND_INTERVAL_WAIT_MS
                     : LORA_SEND_INTERVAL_MS;
-  /* Taban: 39 baytlik hava imaji 2,4 kbps'te ~130 ms seri-esdeger +
-   * preambul (~150-170 ms havada) tutar; 100 ms'lik taban yalniz
-   * aritmetik alt sinirdir. Gercek koruma 200 ms kadanstir. Gecikme
-   * cagrisi degil, vade aritmetigidir. */
+  /* Fixed 100 ms schedule (10 Hz) for pad and flight. AUX is sampled before
+   * transmit; a busy module consumes the due slot rather than burst-replaying. */
   if (ms < LORA_SEND_GAP_MS)
   {
     ms = LORA_SEND_GAP_MS;
@@ -371,11 +429,9 @@ bool lora_link_allowed(uint16_t ek7_mode)
   return true;
 }
 
-/* 6 baytlik kayit imajlari (hedef + host ortak veri, HAL'siz): HI = 57600
- * hedef, EXPECTED = 9600 geri-donus. Iki imaj da basliktaki RF tek-nokta
- * bitlerinden kurulur (derleme-zamani kilitler bit-bit esitligi kanitlar);
- * hava hizi/guc/kanal bitleri iki imajda bit-bit ayni, yalniz REG0 UART
- * bitleri ayrilir. Davranis degisikligi YOK. */
+/* Both module images are deliberately the same 9600-UART / 4.8-kbps RF
+ * setting. Keep the legacy HI symbol for ABI/test compatibility; it is not
+ * selected by the production boot path. */
 const uint8_t LORA_CFG_EXPECTED[LORA_CFG_LEN] = {
   0x00u, 0x00u, LORA_REG0_9600, LORA_REG1_IMAGE, LORA_REG2_CH,
   LORA_REG3_TRANSPARENT_BITS
@@ -384,11 +440,10 @@ const uint8_t LORA_CFG_EXPECTED_HI[LORA_CFG_LEN] = {
   0x00u, 0x00u, LORA_REG0_57600, LORA_REG1_IMAGE, LORA_REG2_CH,
   LORA_REG3_TRANSPARENT_BITS
 };
-/* Urtak donus imaji: REG0=0x65 = 011_00_101 (9600 8N1 + 19,2 kbps hava);
- * diger baytlar kanonik LO ile bit-bit ayni. Yalniz kor-donus yolunda
- * kullanilir (sarti oku). */
+/* Canonical persistent/RAM image shared with the Uno receiver. REG0=0x63:
+ * 9600 8N1 module UART + 4.8 kbps RF data rate. */
 const uint8_t LORA_CFG_COMMON[LORA_CFG_LEN] = {
-  0x00u, 0x00u, 0x65u, 0x00u, 0x17u, 0x00u
+  0x00u, 0x00u, 0x63u, 0x00u, 0x17u, 0x00u
 };
 
 bool lora_cfg_common_img(uint8_t *out8, bool dialog)
@@ -405,6 +460,35 @@ bool lora_cfg_common_img(uint8_t *out8, bool dialog)
   out8[6u] = 0x00u;
   out8[7u] = 0x00u;
   return true;
+}
+
+size_t lora_cfg_write_frame(uint8_t command, uint8_t addr, uint8_t len,
+                            const uint8_t *data, uint8_t *out, size_t cap)
+{
+  /* E220 manual §7.1: BOTH write commands carry a length byte.
+   * C0 persistent = C0 addr len params; C2 temporary = C2 addr len params
+   * (e.g. manual example "C2 00 03 12 34 62"). A C2 frame without the length
+   * byte is answered FF FF FF and applies nothing. */
+  if ((command != 0xC0u && command != 0xC2u) || data == NULL || out == NULL ||
+      len == 0u || len > 8u)
+  {
+    return 0u;
+  }
+  {
+    const size_t total = 3u + len;
+    if (cap < total)
+    {
+      return 0u;
+    }
+    out[0] = command;
+    out[1] = addr;
+    out[2] = len;
+    for (uint8_t i = 0u; i < len; i++)
+    {
+      out[3u + i] = data[i];
+    }
+    return total;
+  }
 }
 
 /* Dogrulanmis 6 baytlik imajdan link baud karari (saf, HAL'siz): HI imajina
@@ -514,7 +598,7 @@ bool lora_cfg_scan_retry(bool hit, uint8_t done)
   return done < LORA_CFG_SCAN_ROUNDS;
 }
 
-/* C0-kalici lik adayi (saf, HAL'siz): ilk tarama okumasi 65-imajindan
+/* C0-kalici lik adayi (saf, HAL'siz): ilk tarama okumasi 63-imajindan
  * FARKLIYSA true (modul irasamis); esitse false (flash omru: eslesen imaja
  * C0 YAZILMAZ); NULL ise false (kanit yok, yazilacak karar yok). */
 bool lora_cfg_needs_persist(const uint8_t *first6)
@@ -528,7 +612,7 @@ bool lora_cfg_needs_persist(const uint8_t *first6)
 
 /* C0 kapisi (saf, HAL'siz): mismatch (ilk okuma farkli) VE c2_ok (C2-RAM
  * yaz+dog rula BASARILI) ise true; yoksa false. False ise sessizce C2-RAM'de
- * kalinir, link yolu aynidir (9600 + RAM 65-imaji). */
+ * kalinir, link yolu aynidir (9600 + RAM 63-imaji). */
 bool lora_cfg_persist_now(bool mismatch, bool c2_ok)
 {
   return (mismatch && c2_ok) ? true : false;
@@ -555,13 +639,14 @@ static bool lora_air_busy(void)
 extern UART_HandleTypeDef huart1;
 
 /* ---- E220 register config (Mode 3), target-only ----
- * Manual §6/§7: Mode 3 = M1=1,M0=1; komutlar modulun o anki REG0 UART
- * baud'unda konusur (bulunamayan baud taramayla aranir, bkz. lora_cfg_boot).
+ * Manual §6/§7: Mode 3 = M1=1,M0=1; configuration commands use fixed
+ * 9600 8N1 regardless of REG0 (manual §7.1; the 8-baud scan below is a
+ * fallback for unknown modules and finds 9600 first).
  * Read = C1 addr len -> C1 addr len params. Write = C2 addr len params
  * (RAM-only) -> C1/C0 addr len echo. Wrong format answers FF FF FF. Every
  * step is bounded; any failure returns the module to Mode 0 and reports
  * FAILED. Never a fault. huart1 baud'u HICBIR durumda DEGILMEZ (hep 9600):
- * yalniz 65-imaji (9600 + 19,2k) yazilir; HI/57600 kolu KALDIRILDI. */
+ * the common 0x63 image (9600 UART + 4.8 kbps RF) is used; no live baud switch. */
 /* NOT: LORA_CFG_EXPECTED / LORA_CFG_EXPECTED_HI artik HAL'siz ortak alanda
  * tanimli (hedef cfg motoru + host baud-karar testi ayni veriyi kullanir). */
 
@@ -573,8 +658,8 @@ static uint8_t s_aux_exit = 2u; /* 0 = low, 1 = high, 2 = unknown */
 /* Baud actually used for the successful Mode 3 exchange (0 = none). */
 static uint32_t s_baud_used = 0u;
 static uint8_t s_stage = 0u;
-/* Yazma varyanti: 1 = 65-imaji (9600 + 19,2k, C2 00 08); 0/2/3 uretilmez
- * (kaldirilan kollarin kodlari, TUI geriye uyumu icin lejantta durur).
+/* Write variant: production applies the common 0x63 image at 9600 UART.
+ * Legacy variant codes remain for TUI compatibility only.
  * Boot TUI "W=" alani bu degeri aynen basar (imza/sira degismez). */
 static uint8_t s_variant = 0xFFu;
 /* AUX-low observations sampled right after a due transmit: a healthy
@@ -728,39 +813,31 @@ static bool lora_cfg_read(uint8_t *params_out)
   return true;
 }
 
-/* Register write: cmd = 0xC0 (flash, persistent) or 0xC2 (RAM,
- * temporary). Frame = cmd addr len params; answer = C1 addr len echo.
- * True only when the full echo arrives and matches. tmo_ms bounds the
- * answer wait (flash commit can be slow). */
+/* E220 manual §7.1 register write frames both carry a length byte:
+ * C0 persistent = C0 addr len params;
+ * C2 temporary  = C2 addr len params (manual example "C2 00 03 12 34 62").
+ * Both reply C1 addr len params; a malformed frame is answered FF FF FF. */
 static bool lora_cfg_write_cmd(uint8_t cmd_byte, uint8_t addr, uint8_t len,
                                const uint8_t *params, uint32_t tmo_ms)
 {
   uint8_t cmd[3u + 8u];
   uint8_t rsp[3u + 8u];
-  if (params == NULL || len == 0u || len > 8u)
+  size_t tx_n = lora_cfg_write_frame(cmd_byte, addr, len, params, cmd, sizeof cmd);
+  if (tx_n == 0u)
   {
     return false;
   }
-  cmd[0] = cmd_byte;
-  cmd[1] = addr;
-  cmd[2] = len;
-  for (uint8_t i = 0u; i < len; i++)
+  for (uint8_t i = 0u; i < (uint8_t)(3u + len); i++)
   {
-    cmd[3u + i] = params[i];
-    rsp[3u + i] = 0u;
+    rsp[i] = 0u;
   }
-  rsp[0] = 0u;
-  rsp[1] = 0u;
-  rsp[2] = 0u;
-  if (!lora_cfg_xfer(cmd, (size_t)(3u + len), rsp, (size_t)(3u + len),
-                     tmo_ms))
+  if (!lora_cfg_xfer(cmd, tx_n, rsp, (size_t)(3u + len), tmo_ms))
   {
     return false;
   }
   if (rsp[0] != 0xC1u || rsp[1] != addr || rsp[2] != len)
   {
-    /* Some modules echo C0 instead of C1 (datasheet erratum, confirmed in
-     * the field): accept either command byte, but addr+len must match. */
+    /* Some modules echo C0 instead of C1; accept either command byte. */
     if (rsp[0] != 0xC0u || rsp[1] != addr || rsp[2] != len)
     {
       return false;
@@ -770,7 +847,7 @@ static bool lora_cfg_write_cmd(uint8_t cmd_byte, uint8_t addr, uint8_t len,
   {
     if (rsp[3u + i] != params[i])
     {
-      return false; /* echo mismatch: write did not stick */
+      return false;
     }
   }
   return true;
@@ -834,30 +911,24 @@ static bool lora_cfg_scan(uint8_t *img_out, uint32_t *baud_out)
 
 lora_cfg_result_t lora_cfg_boot(void)
 {
-  /* Kurtulus yakinlasmasi: her boot 65-imajina (9600 8N1 + 19,2k hava)
-   * yakinsar. 57600/C5 yukseltme KALDIRILDI: RX oluyken dogrulanamaz ve
-   * gecmiste havayi boldugu icin linki oldurdu. huart1 bu fonksiyondan
-   * ASLA 9600 disinda bir baud ile CIKMAZ; REG0'a C5 yazan dal YOKTUR.
-   * Sira: Mode-3 diyalog tara (en fazla 3 tur, tur arasi Mode-0 + 100 ms;
-   * her C1 oncesi AUX-high en fazla 300 ms beklenir, gelmezse YINE DENENIR)
-   * -> C2 00 08 ile 65-imaji her boot kosulsuz yazilir (best-effort; C2
-   * yazilari sahada tuttu) -> dogrulama okumasi dene (RD= tazelenir) ->
-   * SADECE ilk tarama okumasi 65-imajindan FARKLIYSA ve C2-dogrulama tuttuysa
-   * ayni imaj bir kez C0 ile kalici yazilip tekrar okunur (uzun settle: AUX
-   * 1500 ms + 500 ms; eslesen imaja C0 YAZILMAZ; basarisizlik sessizce
-   * C2-RAM'e duser, link yolu ayni) -> Mode 0 -> huart 9600'e sabitle.
+  /* Boot sets the local module to the common 00 00 63 00 17 00 image: 9600 8N1
+   * module UART + 4.8 kbps RF, max 22 dBm. Scan for Mode-3 dialogue, write
+   * C2 with the datasheet frame (C2 addr len params), switch via Mode 0, then
+   * verify. If the saved image differed and the new one verifies, write C0
+   * once to persist the common image. The active UART remains 9600 throughout
+   * normal telemetry; no flight-control or deployment thresholds change.
    * Dogrulama okumasi SONUCU DEGISTIRMEZ (RX olu olabilir): echo eslesirse
    * FIXED, eslesmezse FAILED doner; iki durumda da link yolu 9600 ve
-   * yazilmis 65-imaji ile Mode 0'da birakilir. Ariza yok, ucus dongusune
+   * yazilmis 63-imaji ile Mode 0'da birakilir. Ariza yok, ucus dongusune
    * dokunmaz, SIT/SUT kapisi aynen (lora_poll ici). TUI alanlari aynidir
-   * (AUX/B/RD/ST/W); bu kol W=1 basar (65-yazim kolu). */
+   * (AUX/B/RD/ST/W); bu kol W=1 basar (63-yazim kolu). */
   uint8_t cur[LORA_CFG_LEN];
   uint8_t first[LORA_CFG_LEN];
   uint8_t urg8[8u];
   uint32_t found = 0u;
   bool echo = false;
   bool match = false;
-  bool mismatch0 = false; /* ilk tarama okumasi 65'ten farkli mi (C0 adayi) */
+  bool mismatch0 = false; /* ilk tarama okumasi 63'ten farkli mi (C0 adayi) */
   if (!s_ready)
   {
     return LORA_CFG_SKIPPED;
@@ -885,16 +956,14 @@ lora_cfg_result_t lora_cfg_boot(void)
     s_last_read[i] = cur[i];
     first[i] = cur[i]; /* C0 karari icin ilk okuma saklanir (degismez kopya) */
   }
-  /* C0 adayi: ilk okuma 65-imajindan farkliysa modul irasamistir (guc
+  /* C0 adayi: ilk okuma 63-imajindan farkliysa modul irasamistir (guc
    * cevriminde C2-RAM ucmus, FLASH bilinmeyen imaja donmus olabilir). Eslesen
    * imaja C0 YAZILMAZ (flash omru). Karar saf yuvada verilir (hostla ayni). */
   mismatch0 = lora_cfg_needs_persist(first);
-  /* ADIM 2: her-boot tek C2-65: 65-imaji C2 00 08 ile kosulsuz yazilir.
-   * Yazi dili Mode-3'te her zaman 9600'dur: huart once 9600'e alinir,
-   * Mode 3'e girilir. Echo beklenir; YOKLUGU yaziyi devirmez (RX olu
-   * olabilir, TX saglam): sonuc yalniz raporlamada kullanilir, link
-   * yolunda degil. */
-  huart1.Init.BaudRate = LORA_LINK_BAUD_FALLBACK;
+  /* ADIM 2: C2 temporary config at fixed 9600 8N1 (manual §7.1: config mode
+   * speaks 9600 regardless of REG0). The config becomes active when Mode 3
+   * is exited. */
+  huart1.Init.BaudRate = LORA_LINK_BAUD_FALLBACK; /* config mode is fixed 9600 8N1 (manual §7.1), not the scanned UART */
   if (HAL_UART_Init(&huart1) == HAL_OK)
   {
     lora_mode_set(1u, 1u);
@@ -904,12 +973,14 @@ lora_cfg_result_t lora_cfg_boot(void)
       echo = lora_cfg_write_cmd(0xC2u, LORA_CFG_ADDR, 8u, urg8, 800u);
     }
   }
-  /* ADIM 3: dogrulama okumasi (best-effort; RD= tazelenir). Mode 0 cikis
-   * yazili imaji kosar hale getirir, Mode 3 tekrar giris okur. Eslesme =
-   * FIXED, eslesmeme = FAILED; link yolu iki durumda da aynidir. */
-  lora_mode_set(0u, 0u); /* exit: RAM image becomes running config */
+  /* ADIM 3: leaving Mode 3 applies the RAM image and its UART setting.
+   * Switch the MCU UART only after the radio has exited configuration mode. */
+  lora_mode_set(0u, 0u);
   lora_mode_settle();
-  lora_mode_set(1u, 1u); /* re-enter for the verify read */
+  huart1.Init.BaudRate = LORA_LINK_BAUD_FALLBACK;
+  (void)HAL_UART_Init(&huart1);
+  lora_mode_set(1u, 1u);
+  lora_mode_settle();
   lora_mode_settle();
   if (lora_cfg_read(cur))
   {
@@ -936,14 +1007,14 @@ lora_cfg_result_t lora_cfg_boot(void)
   else
   {
     s_stage = 4u;
-    s_variant = 1u; /* 65-imaji dogrulandi */
+    s_variant = 1u; /* 63-imaji dogrulandi */
   }
   /* ADIM 4: kosullu C0-kalicilik (yalniz irasamis + C2-dogrulamali imajda).
-   * Kapı saf yuvada: mismatch0 && echo && match. Ayni 65-imaji bir kez C0
+   * Kapı saf yuvada: mismatch0 && echo && match. Ayni 63-imaji bir kez C0
    * 00 08 ile yazilip (flash kaydi yavas: 1500 ms butce) AUX-high 1500 ms
    * beklenip 500 ms oturulur, Mode 0 cikis + Mode 3 giris sonrasi tekrar
    * okunur. Basarisizlik SESSIZCE C2-RAM'e duser: sonuc/evre/link yolu
-   * DEGILMEZ (RAM 65-imaji zaten kosuyor, huart 9600). Eslesen imaja bu blok
+   * DEGILMEZ (RAM 63-imaji zaten kosuyor, huart 9600). Eslesen imaja bu blok
    * hic girmez (flash omru). */
   if (lora_cfg_persist_now(mismatch0, (echo && match)))
   {

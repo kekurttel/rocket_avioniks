@@ -158,13 +158,13 @@ export function Hero({ state }: { state: TelemetryState | null }): ReactNode {
           ? "paket alanında irtifa yok"
           : stale
             ? "bayat veri — yeni paket bekleniyor"
-            : `${alt.toFixed(1)} m · taze paket`;
+            : `${alt.toFixed(1)} m · kalkış basıncı referanslı · taze paket`;
 
   return (
-    <section className="bz-hero" aria-label="İrtifa ve uçuş durumu">
+    <section className="bz-hero" aria-label="Göreli irtifa ve uçuş durumu">
       <div>
         <p className="bz-hero__label">
-          İrtifa{" "}
+          Göreli irtifa{" "}
           {red && <span className="bz-chip bz-chip--warning">MENZİL DIŞI · REDDEDİLDİ</span>}
         </p>
         <p className="bz-hero__value">

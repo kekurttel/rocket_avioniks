@@ -319,7 +319,7 @@ export default function Rocket3D(props: Rocket3DProps) {
         {apoje && <span className="bz-chip bz-chip--info">Apoje</span>}
         {red && <span className="bz-chip bz-chip--warning">Menzil dışı · reddedildi</span>}
         <span className="bz-panel__meta">
-          Rakım: {alt != null ? `${alt.toFixed(1)} m` : "—"}
+          Göreli irtifa: {alt != null ? `${alt.toFixed(1)} m` : "—"}
           {yonYaklasik && tilt !== null ? ` · eğik ${(tilt / 10).toFixed(1)}°` : ""}
         </span>
       </header>
@@ -333,7 +333,7 @@ export default function Rocket3D(props: Rocket3DProps) {
         {" · "}Sürükle: döndür · Tekerlek: yakınlaştır.{" "}
         {yonYaklasik
           ? "Eğilme yaklaşık yönelimdir (ivmeölçer, yaw yok); yaw asla uydurulmaz. Yerdeki kehribar ok eğilme yönünü gösterir (boy sabit, derece gerçektir)."
-          : "Pakette canlı yönelim (attitude) alanı bulunmadığı için model nötr pozda durur; yalnızca irtifaya göre yükselir."}
+          : "Göreli irtifa kalkış noktasının kalibre edilmiş barometrik basıncına göredir (deniz seviyesi rakımı değildir). Paket canlı yönelim taşımıyorsa model nötr pozda durur; yalnızca irtifaya göre yükselir."}
       </p>
     </section>
   );

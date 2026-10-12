@@ -68,11 +68,11 @@ export function Readouts({ state }: ReadoutsProps): ReactNode {
 
   return (
     <div className="bz-groups">
-      <ReadoutGroup title="Uçuş">
+      <ReadoutGroup title="Uçuş" note="Göreli irtifa, kalkış noktasındaki kalibre edilmiş barometrik basınca göre hesaplanır; deniz seviyesine göre rakım değildir.">
         <Readout name="Uçuş durumu" value={state === null ? null : flightStateName(state.flight_state)} text />
         <Readout name="Uçuş durumu kodu" value={state?.flight_state == null ? null : String(state.flight_state)} />
         <Readout name="EK7 modu" value={state === null ? null : ek7ModeName(state.ek7_mode)} text />
-        <Readout name="İrtifa" value={num(alt, 2)} unit="m" stale={stale} />
+        <Readout name="Göreli irtifa" value={num(alt, 1)} unit="m" stale={stale} />
         <Readout
           name="Dikey hız"
           value={num(vel == null ? null : vel / 100, 2)}

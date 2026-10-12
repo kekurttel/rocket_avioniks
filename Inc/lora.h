@@ -13,18 +13,12 @@
  * wireless channel open, transparent transmission on" - the RUN mode;
  * (1,1) = Mode 3 Deep Sleep = the CONFIGURATION mode (registers readable/
  * writable, only at 9600 8N1). The firmware owns M0/M1: boot enters Mode 3,
- * registers are scanned (C1, en fazla 3 tur; tur arasi Mode-0 + 100 ms),
- * her boot 65-imaji (9600 8N1 + 19,2k hava) C2-RAM ile kosulsuz yazilir ve
- * geri okumayla dogrulanir; SADECE ilk tarama okumasi 65-imajindan farkliysa
- * (modul irasamis) ve C2-dogrulama tutmussa ayni imaj bir kez C0 ile
- * kalici yazilip tekrar okunur (eslesen imaja C0 YAZILMAZ: flash omru).
- * Sonra Mode 0'a donulup ucusa gecilir. AUX her C1 oncesi en fazla 300 ms
- * beklenir, gelmezse YINE DENENIR (bagli AUX sarti YOK: takilma yok).
- * huart1 hep 9600'de kalir (57600/C5 dali YOKTUR).
- * AUX modul-mesgul isaretidir (dusuk = mesgul/oz-denetim; yuksek = hazir);
- * her kip degisimi sonrasi 100 ms oturulur, her C1 oncesi AUX-high en fazla
- * 300 ms beklenir ama beklenememesi YOLU KESMEZ (bagli AUX sarti YOK).
- * C2-RAM her boot yazilir; C0 yalniz yukaridaki kosulda bir kez yazilir.
+ * registers are scanned (C1, at most three rounds, with Mode-0 recovery).
+ * The common 00 00 63 00 17 00 image (9600 UART, 4.8 kbps RF) is applied via
+ * C2 (C2 addr len params, manual §7.1), switched through Mode 0 and verified.
+ * A differing saved image is persisted once with C0 after successful
+ * verification. The live telemetry UART remains at 9600 8N1.
+ * AUX is low when busy; use bounded waits before mode changes and config reads.
  *
  * ---------------- WHY PB6/PB7 (and not PA9/PA10) ----------------
  * USART1's primary AF7 pair is PA9 (TX) / PA10 (RX). PA10 is the NUCLEO-F446
@@ -46,83 +40,18 @@
  * version or additive CRC does not match, and any field whose value equals its
  * documented sentinel is treated as "no data" rather than as a real reading.
  *
- * ---------------- WIRE FORMAT: exactly 36 bytes, little-endian (v2) ----------
- * Built by EXPLICIT byte writes into a uint8_t buffer (never memcpy of a
- * struct), so the wire image cannot be perturbed by compiler padding,
- * alignment or bitfield layout. _Static_assert below pins the length.
+ * ---------------- WIRE FORMAT: V3, 38 bytes, little-endian ----------------
+ * V1 (30 bytes) and V2 (36 bytes) remain readable; all new transmissions use
+ * V3. V3 preserves the common telemetry but carries altitude as signed i32
+ * decimetres (0.1 m), removing the old whole-metre precision loss.
  *
- *  off  len  field        type    meaning
- *  ---  ---  -----------  ------  ----------------------------------------
- *    0    1  magic        u8      0xA5, fixed frame start
- *    1    1  ver          u8      0x02, protocol version
- *    2    2  seq          u16 LE  packet counter, +1 per packet, wraps
- *    4    4  t_ms         u32 LE  HAL_GetTick() at build time
- *    8    2  flight_state u16 LE  flight_state_t value
- *   10    2  ek7_mode     u16 LE  0 NORMAL / 1 SIT / 2 SUT (mirrors main.c)
- *   12    2  alt_m        i16 LE  irtifa, TAM METRE; gecersiz/NaN/inf/
- *                             aralik-disi okuma LORA_ALT_INVALID (0x8000)
- *                             verir (doyurma YOK)
- *   14    2  vel_cms      i16 LE  dikey hiz, cm/s; gecersiz/NaN/inf/
- *                             aralik-disi okuma LORA_I16_INVALID verir
- *                             (doyurma YOK)
- *   16    2  sats         u16 LE  satellites in use, ALWAYS live (fix or not); 0xFFFF reserved
- *   18    4  lat_e5       i32 LE  latitude, degrees x 1e-5; 0 = invalid
- *   22    4  lon_e5       i32 LE  longitude, degrees x 1e-5; 0 = invalid
- *   26    2  batt_mv      u16 LE  battery millivolts; 0 = unknown
- *   28    1  flags        u8      bit0 gps_fix, bit1 blue_led,
- *                                 bit2 yellow_led, bit3 red_led
- *   29    2  tilt_ddeg    u16 LE  egiklik decidegree 0..1800 (0 = dikey);
- *                             0xFFFF = gecersiz. Filtreli ivme vektorunun
- *                             kalkis referansina gore acisi.
- *   31    2  lean_x       i16 LE  govde X egilme yonu x1000 (-1000..1000);
- *                             gecersizken 0. Yaw referansi YOK.
- *   33    2  lean_y       i16 LE  govde Y egilme yonu x1000; gecersizken 0.
- *   35    1  crc          u8      sum(bytes[0..34]) mod 256
- *
- * The CRC is a plain additive checksum of bytes 0..34, matching the repo's
- * existing convention (ek7_sum, UART command sum). Verification on the
- * receiving side is therefore "lora_crc(f, LORA_CRC_OFF) == f[LORA_CRC_OFF]",
- * i.e. the residual is zero; lora_verify() wraps exactly that.
- * v1 (30 bayt, ver 0x01) cerceveler v2 ayristirici tarafindan REDDEDILIR
- * (versiyon kapisi); Uno alici her iki surumu de kabul eder.
- *
- * ---------------- ALTITUDE UNIT: WHOLE METRES (v1) ----------------
- * alt_m is int16 WHOLE METRES: range -32767..+32767 m, i.e. +/-32.7 km. The
- * production apogee threshold is 1250 m and the bench ceiling (SUT envelope)
- * is 20000 m, so both are representable with >15x margin and no scaling can
- * ever be needed for any high-power flight this airframe flies. Sub-metre
- * resolution is not telemetry data anyone acts on; it is thrown away to keep
- * the field at i16 and the frame at exactly 30 bytes.
- *
- * This replaces the original int16 CENTIMETRE field, which saturated at
- * +/-327.67 m and therefore reported every real apogee as 327.67 m - a
- * flight-critical data bug, since the ground station would have seen the
- * rocket peak far below the 1250 m production gate. tests/host/
- * test_lora_host.c pins 1250 m and 3000 m through a build/parse round trip
- * so the regression cannot come back.
- *
- * ---------------- CADENCE AND THE 400-BYTE MODULE BUFFER ----------------
- * The module buffers 400 bytes internally. The pacing is the send cadence
- * itself: one 39-byte air packet every LORA_SEND_INTERVAL_MS (200 ms =
- * 5 Hz), same on pad and in flight. Kılavuz Tablo 7-2'deki 19,2 kbps hava
- * hızıyla 39 baytlık hava imajı 39*8/19200 = 16,25 ms seri-eşdeğer süre tutar;
- * LoRa preambul/başlık yüküyle ~25-35 ms olur. 200 ms kadans demek %8-18 hava
- * doluluğu demektir (~165-175 ms marj): sarkma/AUX-meşgul anında kayıp
- * KADANS-TAŞMA kökenlidir (tampon birikimi değil, vade-tüketimi). 9600
- * geri-dönüşte kablo süresi 39*10/9600 ~= 41 ms, 57600'de ~= 7 ms; ikisi de
- * 39*10/9600 ~= 41 ms, 57600'de ~= 7 ms; ikisi de 200 ms'in içindedir.
- * LORA_SEND_GAP_MS is a compile-time FLOOR applied to the interval, not a
- * cadence by request (livelier ground-station display); flight safety
- * unchanged (bounded 50 ms TX, one packet per poll, never blocking).
- * LORA_SEND_GAP_MS is a compile-time FLOOR applied to the interval, not a
- * busy-wait after the transmit: a packet is due when
- * (now - s_next_ms) >= 0, and s_next_ms advances by one interval per send
- * (BIRIKIMLI vade: geciken tur faz kaydirmaz; hala gerideyse vade simdiki
- * zamana kurulur, kacirilan kadans atlanir, patlama gonderilmez).
- * There is therefore no delay call on the transmit path at all.
- *
- * At most ONE packet per lora_poll() call, and lora_poll() is called at most
- * once per main-loop iteration: the main loop is the only caller.
+ * V3 offsets: 0 magic A5; 1 version 03; 2 seq u16; 4 tick_ms u32;
+ * 8 flight_state u16; 10 ek7_mode u16; 12 alt_dm i32; 16 vel_cms i16;
+ * 18 sats u16; 20 lat_e5 i32; 24 lon_e5 i32; 28 batt_mv u16; 30 flags u8;
+ * 31 tilt_ddeg u16; 33 lean_x i16; 35 lean_y i16; 37 CRC u8 (sum 0..36).
+ * All fields are written explicitly; no packed C struct reaches the wire.
+ * Altitude is relative to the calibrated launch/reference pressure, NOT sea
+ * level. INT32_MIN is the V3 altitude-invalid sentinel; V1/V2 retain i16.
  *
  * ---------------- SIT/SUT GATE ----------------
  * LORA_ALLOW_SIT_SUT is 0: while ek7_mode is SIT or SUT the Ek-7 binary frames
@@ -172,9 +101,16 @@ typedef int lora_status_t;
 extern "C" {
 #endif
 
-/* ---------------- Protokol sabitleri (v2) ---------------- */
+/* ---------------- Protocol and current V3 wire offsets ---------------- */
 #define LORA_MAGIC (0xA5u)
-#define LORA_VER (0x02u)
+#define LORA_VER (0x03u)
+#define LORA_VER_V1 (0x01u)
+#define LORA_VER_V2 (0x02u)
+#define LORA_VER_V3 (0x03u)
+#define LORA_V1_FRAME_LEN (30u)
+#define LORA_V2_FRAME_LEN (36u)
+#define LORA_V3_FRAME_LEN (38u)
+#define LORA_FRAME_LEN LORA_V3_FRAME_LEN
 
 #define LORA_OFF_MAGIC (0u)
 #define LORA_OFF_VER (1u)
@@ -182,28 +118,19 @@ extern "C" {
 #define LORA_OFF_T_MS (4u)
 #define LORA_OFF_FLIGHT_STATE (8u)
 #define LORA_OFF_EK7_MODE (10u)
-#define LORA_OFF_ALT_M (12u)
-#define LORA_OFF_VEL_CMS (14u)
-#define LORA_OFF_SATS (16u)
-#define LORA_OFF_LAT_E5 (18u)
-#define LORA_OFF_LON_E5 (22u)
-#define LORA_OFF_BATT_MV (26u)
-#define LORA_OFF_FLAGS (28u)
-/* v2 ek alanlar (LE): tilt decidegree u16, lean_x/lean_y i16 x1000.
- * tilt = filtreli ivme vektorunun kalkis yercekimi referansina gore acisi
- * (0 = dikey). lean = normalize filtreli-ivme X/Y bilesenleri x1000
- * (govde ekseninde egilme yonu; yaw referansi YOK).
- * NOT: bayt 29 bosta kalamaz (30+2+2+2=36): tilt bayt 29'dan baslar,
- * CRC 35'te, cerceve 36 bayt. */
-#define LORA_OFF_TILT (29u)
-#define LORA_OFF_LEANX (31u)
-#define LORA_OFF_LEANY (33u)
-#define LORA_OFF_CRC (35u)
-
-/* 36 bayt toplam: yukaridaki tum alanlar CRC baytina kadar bitisik. */
-#define LORA_FRAME_LEN (36u)
-/* CRC, [0, LORA_OFF_CRC) = [0, 35) = 0..34 dahil baytlari kapsar. */
-#define LORA_CRC_OFF (LORA_OFF_CRC)
+#define LORA_OFF_ALT_DM (12u)
+#define LORA_OFF_ALT_M LORA_OFF_ALT_DM /* current V3 field offset; legacy parsing is versioned */
+#define LORA_OFF_VEL_CMS (16u)
+#define LORA_OFF_SATS (18u)
+#define LORA_OFF_LAT_E5 (20u)
+#define LORA_OFF_LON_E5 (24u)
+#define LORA_OFF_BATT_MV (28u)
+#define LORA_OFF_FLAGS (30u)
+#define LORA_OFF_TILT (31u)
+#define LORA_OFF_LEANX (33u)
+#define LORA_OFF_LEANY (35u)
+#define LORA_OFF_CRC (37u)
+#define LORA_CRC_OFF LORA_OFF_CRC
 
 /* ---------------- Sentinels ---------------- */
 /* irtifa "veri yok": 0x8000 int16 olarak -32768'dir, yani gecerli
@@ -211,7 +138,8 @@ extern "C" {
  * aralikta yarim-uzakliktan yuvarlar; gecersiz/NaN/inf/aralik-disi her
  * okuma bu gozcuyu verir (doyurma YOK: 32767'ye kelepcelenmis sahte irtifa
  * gercek okumadan ayirt edilemezdi). */
-#define LORA_ALT_INVALID ((int16_t)0x8000)
+#define LORA_ALT_INVALID ((int16_t)0x8000) /* legacy V1/V2 whole metres */
+#define LORA_ALT_DM_INVALID INT32_MIN /* V3 signed decimetres */
 /* hiz (cm/s) "veri yok": gecerli aralik -32767..+32767 cm/s; aralikta KESME
  * (eski davranis aynen), disinda/NaN/inf'de gozcu (doyurma YOK). */
 #define LORA_I16_INVALID ((int16_t)0x8000)
@@ -229,99 +157,64 @@ extern "C" {
 #define LORA_F_RED_LED (1u << 3)
 
 /* ---------------- Timing ---------------- */
-#define LORA_SEND_INTERVAL_MS (200u)   /* flight cadence: 5 Hz */
-#define LORA_SEND_INTERVAL_WAIT_MS (200u) /* pad cadence: 5 Hz */
-#define LORA_SEND_GAP_MS (100u) /* aritmetik alt sinir, gecikme cagrisi DEGIL.
-                                  * NOT: 39 baytlik hava imaji 19,2 kbps'te
-                                  * ~16 ms seri-esdeger + preambul (~25-35 ms havada) tutar; bu
-                                  * 100 ms taban yalniz aritmetik alt sinirdir.
-                                  * Gercek koruma 200 ms kadansin
-                                  * kendisidir (vade aritmetigi, patlama yok). */
-#define LORA_TX_TMO_MS (50u) /* hard cap on HAL_UART_Transmit */
-
-/* Ardisik TX-hatasinda huart1 re-init esigi (K): HAL_UART_Transmit K kez
- * ust uste basarisiz olursa (cikmis/kopmus E220 kablosu gibi kalici ariza)
- * UART abort + DeInit/Init ile dogrulanmis link baud'unda yeniden
- * baslatilir (57600, geri-donuste 9600). Sayac her basarili gonderimde
- * sifirlanir; re-init sayisi lora_reinit_count() ile okunur. K=10: tek
- * seferlik parazitler (1-2) tetiklemez, kalici ariza (~2 sn = 10 kadans)
- * cabuk toparlar. */
+#define LORA_SEND_INTERVAL_MS (100u)   /* target cadence: 10 Hz */
+#define LORA_SEND_INTERVAL_WAIT_MS (100u) /* pad cadence: 10 Hz */
+#define LORA_SEND_GAP_MS (100u) /* one packet maximum per 100 ms deadline */
+#define LORA_TX_TMO_MS (50u) /* bounded UART transfer at 9600 8N1 */
 #define LORA_TXERR_REINIT_K (10u)
 
-/* ---------------- Link UART baud (STM32 <-> E220, Mode 0 seffaf trafik) --
- * Hedef 57600: 39 baytlik paket 9600'de ~41 ms, 57600'de ~7 ms kablo
- * suresiyle module girer. Hava hizi 19,2 kbps: IKI modul de ayni havada
- * OLMALIDIR (Uno modulu 65-imajinda = 19,2k; STM32 HI/C5 ya da urtak
- * 65-imajina yakinsar). Tek-yanli hava degisikligi linki oldurur (sahada
- * goruldu). Yazi dogrulanmadan baud degismez: C2 yazi + 57600 readback OK
- * ise link 57600'ye gecer, aksi halde 9600 geri-donuste kalir
- * (lora_cfg_boot). FALLBACK ayni zamanda lora_init() sonrasi varsayilandir. */
-#define LORA_LINK_BAUD (57600u)
+/* ---------------- Link UART baud (STM32 <-> E220) --------------------------
+ * Both modules use 9600 8N1 UART. UART baud and RF air rate are separate
+ * settings; changing one does not make the other side's RF rate compatible.
+ */
+#define LORA_LINK_BAUD (9600u)
 #define LORA_LINK_BAUD_FALLBACK (9600u)
-/* REG0 UART bitleri (kullanim kilavuzu Tablo 7-2): bit7-5 baud, bit4-3
- * 00=8N1, bit2-0 101=19,2k hava. 0x65=011_00_101 (9600), 0xC5=110_00_101
- * (57600): UART disinda yalniz hava bitleri degisebilir; parite/guc/kanal
- * bitleri aynen korunur. */
-#define LORA_REG0_9600 (0x65u)
-#define LORA_REG0_57600 (0xC5u)
+#define LORA_REG0_9600 (0x63u)   /* 9600 8N1 + 4.8 kbps RF */
+#define LORA_REG0_57600 (0xC3u)  /* legacy alternate UART, same 4.8 kbps RF */
 
-/* ---------------- RF tek-nokta: guc / hava hizi / kanal ----------------
- * Kullanim kilavuzu Tablo 7-2 + §10.1'e gore COZUM (mevcut imaj
- * 00 00 65 00 17 00; fabrika varsayilani 00 00 62 00 17 00 idi):
- *   REG0 = 0x65 = 011_00_101 -> 9600 8N1, hava 101 = 19,2 kbps.
- *   (Fabrika 0x62 = 011_00_010 idi: ayni UART/parite, hava 010 = 2,4 kbps.)
- *   REG1 = 0x00 -> alt-paket 00 = 200 B, ortam-RSSI kapali, guc 00 = 22 dBm
- *     (EN YUKSEK = donanim tavani; kilavuz §7.2: 00=22, 01=17, 10=13,
- *     11=10 dBm. Guc ARTIRILAMAZ, zaten tavandadir).
- *   REG2 = 0x17 = CH23 -> 850.125 + 23 = 873.125 MHz.
- *   REG3 = 0x00 -> seffaf iletim, RSSI bayti yok, LBT yok.
- * Asagidaki bit sabitleri bu imajin TEK NOKTASIDIR: LORA_CFG_EXPECTED /
- * LORA_CFG_EXPECTED_HI Src/lora.c'de bunlardan kurulur, derleme-zamani
- * kilitler (asagida) bit-bit esitligi kanitlar. Davranis degisikligi YOK:
- * iki imaj yalniz REG0 UART bitlerinde ayrilir; hava hizi/guc/kanal
- * bit-bit aynidir.
- * DURUST NOT (19,2k, OLCULDU + ONARILDI): 2,4 kbps'te 39B hava suresi
- * ~150-170 ms + 200 ms kadans = ~30 ms marjdi; TX-oncesi AUX atlama
- * iskalayip gondericiyi ~1,5 Hz'ye dusuruyordu. 19,2 kbps'te 39B imaj
- * ~25-35 ms olur; marj ~165-175 ms, 5 Hz surdurulebilir. Sart: IKI
- * modul de ayni havada OLMALIDIR — tek-yanli gecis linki oldurur (sahada
- * goruldu: STM32 C5'e, Uno 65'e dagilinca hava uyusmadi). Kurtulus:
- * W=2/W=3 kolemeleri her boot'ta imaji okuyup ya uyarlar ya urtak
- * 65-imajina dondurur; iki sonuc da 19,2k havalidir (Uno ile uyumlu).
- * Hiz artirmak duyarliligi dusurur (menzil saha olcumuyle dogrulanacak). */
-#define LORA_REG0_UART_9600_BITS (0x60u)   /* bit7-5 = 011 */
-#define LORA_REG0_UART_57600_BITS (0xC0u)  /* bit7-5 = 110 */
+/* ---------------- RF settings: datasheet Table 7-2 ------------------------
+ * Current common module image: 00 00 63 00 17 00.
+ * REG0=0x63: UART 9600 8N1 and RF air rate 4.8 kbps (air-rate bits 011).
+ * Both radios MUST use the same RF air rate. Ebyte explicitly states that a
+ * higher air rate shortens transmission distance, so 4.8 kbps is selected as
+ * a range/speed compromise for 10 Hz. 2.4 kbps is too slow for a 100 ms period.
+ * REG1=0x00: 200-byte subpacket, RSSI ambient read disabled, 22 dBm MAX TX.
+ * The hardware is already at its maximum output power; software cannot raise it.
+ * REG2=0x17: channel 23 / 873.125 MHz. REG3=0x00: transparent mode, no RSSI
+ * trailer, no LBT. Non-rate RF settings are intentionally unchanged.
+ */
+#define LORA_REG0_UART_9600_BITS (0x60u)
+#define LORA_REG0_UART_57600_BITS (0xC0u)
 #define LORA_REG0_UART_MASK (0xE0u)
-#define LORA_REG0_PARITY_8N1_BITS (0x00u)  /* bit4-3 = 00 */
-#define LORA_REG0_AIR_2K4_BITS (0x02u)     /* bit2-0 = 010 = 2,4 kbps (Tablo 7-2, fabrika) */
-#define LORA_REG0_AIR_19K2_BITS (0x05u)    /* bit2-0 = 101 = 19,2 kbps (Tablo 7-2, mevcut) */
+#define LORA_REG0_PARITY_8N1_BITS (0x00u)
+#define LORA_REG0_AIR_2K4_BITS (0x02u)
+#define LORA_REG0_AIR_4K8_BITS (0x03u)
 #define LORA_REG0_AIR_MASK (0x07u)
-#define LORA_REG1_SUBPKT_200B_BITS (0x00u) /* bit7-6 = 00 */
+#define LORA_REG1_SUBPKT_200B_BITS (0x00u)
 #define LORA_REG1_SUBPKT_MASK (0xC0u)
-#define LORA_REG1_POWER_22DBM_BITS (0x00u) /* bit1-0 = 00 = tavan */
+#define LORA_REG1_POWER_22DBM_BITS (0x00u)
 #define LORA_REG1_POWER_MASK (0x03u)
 #define LORA_REG1_IMAGE (LORA_REG1_SUBPKT_200B_BITS | LORA_REG1_POWER_22DBM_BITS)
-#define LORA_REG2_CH (0x17u)               /* CH23 = 873.125 MHz */
+#define LORA_REG2_CH (0x17u)
 #define LORA_REG3_TRANSPARENT_BITS (0x00u)
-/* Bilgi tek-noktasi (karar/olcum icin, kod uretmez): */
-#define LORA_AIR_RATE_BPS (19200u)
-#define LORA_TX_POWER_DBM (22u) /* donanim tavani; artirilamaz */
+#define LORA_AIR_RATE_BPS (4800u)
+#define LORA_TX_POWER_DBM (22u)
 _Static_assert((LORA_REG0_UART_9600_BITS | LORA_REG0_PARITY_8N1_BITS |
-                LORA_REG0_AIR_19K2_BITS) == LORA_REG0_9600,
-               "REG0 9600 imaji bit kurulumuyla ayni olmali");
+                LORA_REG0_AIR_4K8_BITS) == LORA_REG0_9600,
+               "REG0 9600/4.8kbps image mismatch");
 _Static_assert((LORA_REG0_UART_57600_BITS | LORA_REG0_PARITY_8N1_BITS |
-                LORA_REG0_AIR_19K2_BITS) == LORA_REG0_57600,
-               "REG0 57600 imaji bit kurulumuyla ayni olmali");
+                LORA_REG0_AIR_4K8_BITS) == LORA_REG0_57600,
+               "REG0 57600/4.8kbps image mismatch");
 _Static_assert(LORA_REG1_IMAGE == 0x00u,
-               "REG1 imaji 200B + 22dBm ile ayni olmali");
+               "REG1 must remain 200B + maximum 22dBm");
 
 /* ---------------- Fixed-header fallback (datasheet §5.1) ----------------
  * When the peer module is stuck in fixed-transmission mode (REG3 bit6=1)
  * and register writes fail, its address filter drops every headerless
  * packet. Setting LORA_FIXED_HDR prepends the peer's {ADDH, ADDL, CH}
- * so its filter accepts our packets. The 36-byte core frame (and its CRC)
- * is unchanged; the air image is 39 bytes. The receiver's magic sync
- * skips the 3 header bytes automatically. Values below match a peer at
+ * so its filter accepts our packets. The current V3 core frame is 38 bytes
+ * plus the 3-byte header (41 bytes on air). The receiver magic sync skips the
+ * header automatically. Values below match a peer at
  * address 0x0002, channel 0x17. Set to 0 for pure transparent operation. */
 #define LORA_FIXED_HDR (1u)
 #define LORA_FIXED_HDR_0 (0x00u)
@@ -343,33 +236,26 @@ _Static_assert(LORA_REG1_IMAGE == 0x00u,
  * the fault packet is the single most useful one in the whole flight. */
 #define LORA_SEND_IN_FAULT (1u)
 
-/* ---------------- Packed wire length ---------------- */
-_Static_assert(LORA_FRAME_LEN == 36u, "LoRa frame must be exactly 36 bytes");
-_Static_assert(LORA_OFF_CRC + 1u == LORA_FRAME_LEN,
-               "CRC byte must be the last byte of the frame");
-_Static_assert(LORA_OFF_TILT == 29u, "tilt offset must be 29");
-_Static_assert(LORA_OFF_LEANX == 31u, "lean_x offset must be 31");
-_Static_assert(LORA_OFF_LEANY == 33u, "lean_y offset must be 33");
-_Static_assert(LORA_OFF_FLAGS + 1u == LORA_OFF_TILT,
-               "flags byte must sit immediately before tilt");
-/* Every field is contiguous with no gaps: each field's offset equals the
- * previous field's offset + width. */
+/* ---------------- Wire layout static assertions --------------------------- */
+_Static_assert(LORA_V1_FRAME_LEN == 30u, "V1 compatibility length changed");
+_Static_assert(LORA_V2_FRAME_LEN == 36u, "V2 compatibility length changed");
+_Static_assert(LORA_FRAME_LEN == 38u, "V3 frame must be exactly 38 bytes");
+_Static_assert(LORA_OFF_CRC + 1u == LORA_FRAME_LEN, "V3 CRC must be final");
 _Static_assert(LORA_OFF_VER + 1u == LORA_OFF_SEQ, "ver/seq gap");
 _Static_assert(LORA_OFF_SEQ + 2u == LORA_OFF_T_MS, "seq/t_ms gap");
 _Static_assert(LORA_OFF_T_MS + 4u == LORA_OFF_FLIGHT_STATE, "t_ms/state gap");
 _Static_assert(LORA_OFF_FLIGHT_STATE + 2u == LORA_OFF_EK7_MODE, "state/mode gap");
-_Static_assert(LORA_OFF_EK7_MODE + 2u == LORA_OFF_ALT_M, "mode/alt gap");
-_Static_assert(LORA_OFF_ALT_M + 2u == LORA_OFF_VEL_CMS, "alt/vel gap");
+_Static_assert(LORA_OFF_EK7_MODE + 2u == LORA_OFF_ALT_DM, "mode/alt gap");
+_Static_assert(LORA_OFF_ALT_DM + 4u == LORA_OFF_VEL_CMS, "alt/vel gap");
 _Static_assert(LORA_OFF_VEL_CMS + 2u == LORA_OFF_SATS, "vel/sats gap");
 _Static_assert(LORA_OFF_SATS + 2u == LORA_OFF_LAT_E5, "sats/lat gap");
 _Static_assert(LORA_OFF_LAT_E5 + 4u == LORA_OFF_LON_E5, "lat/lon gap");
 _Static_assert(LORA_OFF_LON_E5 + 4u == LORA_OFF_BATT_MV, "lon/batt gap");
 _Static_assert(LORA_OFF_BATT_MV + 2u == LORA_OFF_FLAGS, "batt/flags gap");
-/* The altitude sentinel must be outside the representable real range so a
- * real reading can never be mistaken for "no altitude". */
-_Static_assert(LORA_ALT_INVALID == (int16_t)0x8000 &&
-                   LORA_ALT_INVALID < (int16_t)-32767,
-               "altitude sentinel must be outside the real range");
+_Static_assert(LORA_OFF_FLAGS + 1u == LORA_OFF_TILT, "flags/tilt gap");
+_Static_assert(LORA_OFF_TILT + 2u == LORA_OFF_LEANX, "tilt/leanx gap");
+_Static_assert(LORA_OFF_LEANX + 2u == LORA_OFF_LEANY, "leanx/leany gap");
+_Static_assert(LORA_ALT_DM_INVALID == INT32_MIN, "V3 altitude sentinel changed");
 
 /* ---------------- Plain, HAL-free frame description ----------------
  * Every field is already in its WIRE UNIT (metres, cm/s, 1e-5 degrees,
@@ -382,7 +268,8 @@ typedef struct
   uint32_t t_ms;
   uint16_t flight_state;
   uint16_t ek7_mode;
-  int16_t alt_m; /* WHOLE metres, -32767..+32767 */
+  int16_t alt_m; /* compatibility: rounded whole metres or legacy sentinel */
+  int32_t alt_dm; /* V3 signed decimetres (0.1 m), INT32_MIN = invalid */
   int16_t vel_cms;
   uint16_t sats;
   int32_t lat_e5;
@@ -394,9 +281,8 @@ typedef struct
   int16_t lean_y;     /* govde Y x1000 (-1000..1000); gecersizken 0 */
 } lora_frame_t;
 
-/* Raw telemetry as the caller has it (metres, m/s, validity). Converted by
- * lora_frame_from_tlm(); keeping the two apart is what lets the encoder be
- * unit-tested on the host with no HAL and no float in the byte layout. */
+/* Raw telemetry as the caller has it (metres, m/s, validity); V3 altitude
+ * retains 0.1 m resolution in the wire image. */
 typedef struct
 {
   uint16_t flight_state;
@@ -425,25 +311,23 @@ typedef struct
 /* Additive checksum, mod 256. Same rule as ek7_sum(). */
 uint8_t lora_crc(const uint8_t *d, size_t n);
 
-/* Encode in -> out. Returns LORA_FRAME_LEN, or 0 if out/in is NULL or
- * cap < LORA_FRAME_LEN (nothing is written in that case). Writes EXACTLY
- * out[0..35]; never touches out[36..cap). */
+/* Encode current V3. Returns LORA_FRAME_LEN, or 0 if out/in is NULL or
+ * cap < LORA_FRAME_LEN (nothing is written). Writes exactly out[0..37]. */
 size_t lora_build(uint8_t *out, size_t cap, const lora_frame_t *in);
 
-/* Encode in -> out as the 39-byte air image (fixed header + 36-byte
- * core). Returns LORA_AIR_LEN, or 0 if out/in NULL or cap too small.
- * Used when LORA_FIXED_HDR is 1; lora_build() stays the 36-byte core. */
+/* Encode the fixed-header air image (3-byte header + 38-byte V3 core = 41B).
+ * Returns LORA_AIR_LEN, or 0 if out/in NULL or cap too small. */
 size_t lora_build_air(uint8_t *out, size_t cap, const lora_frame_t *in);
 
-/* Decode + validate out of f. Returns true only when n == LORA_FRAME_LEN,
- * magic and version match and the CRC residual is zero. */
+/* Decode/validate V1 (30B), V2 (36B), or current V3 (38B). New transmissions
+ * are V3; historical frames remain readable. CRC is the final byte per version. */
 bool lora_parse(const uint8_t *f, size_t n, lora_frame_t *out);
 
-/* True when f is LORA_FRAME_LEN bytes with correct magic, version and CRC. */
+/* True when a supported version has its exact frame length, magic and CRC. */
 bool lora_verify(const uint8_t *f, size_t n);
 
-/* Map raw telemetry + tick + seq onto the wire fields (metres -> whole
- * metres, m/s -> cm/s, validity -> sentinels). HAL-free. */
+/* Map raw telemetry + tick + seq to the wire fields (metres -> 0.1 m V3
+ * altitude, m/s -> cm/s, validity -> sentinels). HAL-free. */
 void lora_frame_from_tlm(lora_frame_t *out, uint16_t seq, uint32_t t_ms,
                          const lora_tlm_t *in);
 
@@ -466,35 +350,26 @@ bool lora_link_allowed(uint16_t ek7_mode);
 #define LORA_AUX_Pin GPIO_PIN_9
 
 /* ---------------- Module register image (transparent mode) ----------------
- * Read with C1 00 06, written with C2 00 08 + 8 bytes every boot
- * (RAM-only, see lora_cfg_boot). ADDH/ADDL = 0x0000, REG1 = 0x00
- * (200 B sub-packet, no ambient RSSI, 22 dBm), REG2 = 0x17 (CH 23 =
- * 850.125 + 23 = 873.125 MHz factory default), REG3 = 0x00
- * (transparent, no RSSI byte, no LBT): guc/kanal DEGILMEZ; hava hizi
- * 19,2 kbps'tir (REG0 bit2-0 = 101, Tablo 7-2).
- * Yalniz REG0 UART bitleri hedeflenir: HI imaj (0xC5 = 57600 8N1, 19,2k
- * hava) yazilir ve 57600'de geri okunur; dogrulama tutmazsa EXPECTED
- * (0x65 = 9600 8N1, 19,2k hava) geri-donus imaji yazilir. Iki imaj da
- * yalniz REG0'da ayrilir (diger 5 bayt bit-bit ayni).
- * Kor urtak donus: geri-donus yazisi/dogrulamasi da tutmazsa (FAILED)
- * ve Mode-3 diyalogu kanitliysa urtak imaj (0x65: 9600 + 19,2k, karsi
- * modulle ayni hava) tek seferlik C2 ile kor yazilir (W=2); HI okunursa
- * huart yazisiz o baud'a alinir (W=3). Imza/alan sirasi/stage anlami
- * degismez. */
+ * Read with C1 00 06. Current desired image is 00 00 63 00 17 00:
+ * REG0=0x63 (9600 8N1 UART + 4.8 kbps RF), REG1=00 (200-byte subpacket,
+ * 22 dBm maximum), REG2=17 (873.125 MHz), REG3=00 (transparent mode).
+ * Persistent C0 frame and temporary C2 frame both carry a length byte
+ * (C0/C2 addr len params, E220 manual §7.1). C2 is
+ * verified after switching through Mode 0; C0 is written once on a verified
+ * migration from a different saved image, not on every matching boot.
+ */
 #define LORA_CFG_ADDR (0x00u)
 #define LORA_CFG_LEN (6u)
 extern const uint8_t LORA_CFG_EXPECTED[LORA_CFG_LEN];    /* 9600 geri-donus */
 extern const uint8_t LORA_CFG_EXPECTED_HI[LORA_CFG_LEN]; /* 57600 hedef */
 
-/* Dogrulanmis 6 baytlik imajdan link baud karari (saf, HAL'siz, hedef+host
- * ortak): HI imajina tam eslesme -> LORA_LINK_BAUD (57600); her baska durum
- * (9600 imaji, bozuk imaj, NULL) -> LORA_LINK_BAUD_FALLBACK (9600). Hedef cfg
- * motoru da bu karari kullanir (yazi dogrulanmadan huart1 degismez), host
- * regresyon testi de; donanima dokunmaz, bekleme yok. */
+/* Retained host-tested helper for legacy configuration-image diagnostics.
+ * Production currently fixes the radio UART to 9600 8N1 and shares one RF
+ * image, so this helper does not enable an unverified baud switch. */
 uint32_t lora_cfg_verified_baud(const uint8_t *v6);
 
-/* Kor urtak donus imaji (hedef + host ortak veri, HAL'siz): 00 00 65 00
- * 17 00 = 9600 8N1 + 19,2 kbps hava + 22 dBm + 873,125 MHz + seffaf.
+/* Kor urtak donus imaji (hedef + host ortak veri, HAL'siz): 00 00 63 00
+ * 17 00 = 9600 8N1 + 4.8 kbps hava + 22 dBm + 873,125 MHz + seffaf.
  * Karsi modulle (Uno tarafi) ayni HAVA'da olan TEK guvenli imaj budur.
  * Boot onarimi, dogrulama imkansizken (RX olu) ve Mode-3 diyalogu
  * ayni boot'ta kanitliyken bunu kor yazar (C2, best-effort); yoksa yazmaz.
@@ -502,6 +377,12 @@ uint32_t lora_cfg_verified_baud(const uint8_t *v6);
  * true doner (06H/07H=0 korunur), false ise tampona dokunmaz. */
 extern const uint8_t LORA_CFG_COMMON[LORA_CFG_LEN];
 bool lora_cfg_common_img(uint8_t *out8, bool dialog);
+/* Datasheet-accurate E220 write-frame builder, shared with host tests:
+ * C0 = command + address + length + data; C2 = command + address + length
+ * + data (manual §7.1, e.g. "C2 00 03 12 34 62").
+ * Returns transmitted byte count, or 0 for invalid arguments/capacity. */
+size_t lora_cfg_write_frame(uint8_t command, uint8_t addr, uint8_t len,
+                            const uint8_t *data, uint8_t *out, size_t cap);
 
 /* ---------------- Kesif-onarim siniflandirmasi (saf, HAL'siz) ----------------
  * OLAY: yankisi gorulmeyen bir C0/C2 yazisi modulde TUTMUS olabilir (RX teli
@@ -529,19 +410,19 @@ uint32_t lora_cfg_found_link_baud(const uint8_t *img6, uint32_t found_baud);
 
 /* ---------------- Boot-dayaniklilik karar yuvalari (saf, HAL'siz) --------
  * Hedef cfg motoru + host regresyonu AYNI karari kullanir; donanima dokunmaz,
- * bekleme yok, hepsi boot-fazi. 65-imaji = LORA_CFG_EXPECTED (9600 + 19,2k).
+ * bekleme yok, hepsi boot-fazi. 63-imaji = LORA_CFG_EXPECTED (9600 + 4.8k).
  *   LORA_CFG_SCAN_ROUNDS: C1-taramasi en fazla bu kadar tur dener (tur arasi
  *     Mode-0 + 100 ms). Ilk tutan kazanir; hedef dongu bu sayiyi kullanir.
  *   lora_cfg_scan_retry: tur-karari. hit=true ise false (dur, kazandin);
  *     hit=false ve done<ROUNDS ise true (bir tur daha dene), yoksa false.
  *     done = bitmis tur sayisi (0..ROUNDS).
- *   lora_cfg_needs_persist: ilk tarama okumasi 65-imajindan FARKLIYSA true
+ *   lora_cfg_needs_persist: ilk tarama okumasi 63-imajindan FARKLIYSA true
  *     (modul irasamis, C0 adayi); esitse/NULL ise false (flash omru: eslesen
  *     imaja C0 YAZILMAZ; okuma yoksa yazilacak kanit yok).
  *   lora_cfg_persist_now: C0 kapisi. mismatch && c2_ok ise true (C2-RAM
  *     yaz+dog rula BASARILI olduktan SONRA ayni imaj bir kez C0 ile yazilir
  *     ve tekrar okunur); yoksa false (sessizce C2-RAM'de kal, link yolu ayni).
- * 57600/C5 dali YOKTUR; huart hep 9600. */
+ * production never enables an alternate UART baud; huart stays 9600. */
 #define LORA_CFG_SCAN_ROUNDS (3u)
 bool lora_cfg_scan_retry(bool hit, uint8_t done);
 bool lora_cfg_needs_persist(const uint8_t *first6);
@@ -562,7 +443,7 @@ const char *lora_cfg_str(lora_cfg_result_t r);
  * exit (0 = low, 1 = high, 2 = unknown), baud of the successful Mode 3
  * exchange (0 = none, else 9600/57600), stage (0 = none, 1 = read fail,
  * 2 = echo fail, 3 = verify fail, 4 = ok), variant (0 = 57600 tam imaj
- * C2 00 08, 1 = 9600 geri-donus tam imaj (65-imaji), 2/3 = kaldirilan
+ * C2 00 08, 1 = 9600 geri-donus tam imaj (63-imaji), 2/3 = kaldirilan
  * kesif kollari (uretilmez; TUI geriye uyumu icin lejantta durur),
  * FF = none). Imza ve alan sirasi sabittir (boot TUI formati bozulmaz).
  * Target-only, boot phase. */

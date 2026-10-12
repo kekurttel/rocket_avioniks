@@ -1,7 +1,8 @@
 /* Host tests for the LoRa telemetry link (Src/lora.c, HAL-independent).
  * Covers the exact byte layout, the additive CRC, the sequence counter and its
  * wrap, the invalid-value sentinels round-tripping, the argument guards, the
- * cadence/SIT-SUT gate and a hand-derived golden 36-byte vector. */
+ * cadence/SIT-SUT gate, 0.1 m signed altitude, V1/V2 compatibility, and a
+ * hand-derived V3 38-byte golden vector. */
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@
 static int n_pass = 0;
 #define CHECK(c) do { assert(c); n_pass++; } while (0)
 
-/* Poll emits the air image: with LORA_FIXED_HDR the 36-byte core sits
+/* Poll emits the air image: with LORA_FIXED_HDR the 38-byte V3 core sits
  * behind the 3-byte peer header. Ground-station side strips it. */
 static const uint8_t *core_of(const uint8_t *tx)
 {
@@ -35,7 +36,8 @@ static lora_frame_t sample(void)
   f.t_ms = 0x11223344u;    /* -> 44 33 22 11         */
   f.flight_state = 3u;    /* FLIGHT_ASCENT -> 03 00 */
   f.ek7_mode = 0u;        /* NORMAL         -> 00 00 */
-  f.alt_m = 1250;         /* 1250 m         -> E2 04 */
+  f.alt_m = 1250;         /* compatibility view */
+  f.alt_dm = 12500;       /* 1250.0 m       -> D4 30 00 00 */
   f.vel_cms = -1500;      /* -15.0 m/s      -> 24 FA */
   f.sats = 9u;            /* -> 09 00                */
   f.lat_e5 = 41012345;    /* 41.012345 deg -> 79 CC 71 02 */
@@ -48,30 +50,17 @@ static lora_frame_t sample(void)
   return f;
 }
 
-/* ---- Hand-derived golden vector ------------------------------------------
- * Every field was converted to little-endian by hand BEFORE the builder was
- * run:
- *   seq          0x1234      = 34 12
- *   t_ms         0x11223344  = 44 33 22 11
- *   flight_state 3           = 03 00
- *   ek7_mode     0           = 00 00
- *   alt_m        1250        = 1250 = 0x04E2  -> E2 04   (WHOLE METRES)
- *   vel_cms      -1500       = 65536-1500 = 64036 = 0xFA24 -> 24 FA
- *   sats         9           = 09 00
- *   lat_e5       41012345    = 0x0271CC79 -> 79 CC 71 02
- *   lon_e5       29098765    = 0x01BC030D -> 0D 03 BC 01
- *   batt_mv      12250       = 0x2FDA    -> DA 2F
- *   flags        0x0B        = 0B
- *   tilt_ddeg    123         = 0x007B    -> 7B 00   (12.3 derece)
- *   lean_x       100         = 0x0064    -> 64 00   (0.100 govde X)
- *   lean_y       -50         = 65536-50 = 65486 = 0xFFCE -> CE FF
- * CRC = sum(bytes 0..34) mod 256. Eski 0..28 toplami 1855 (yukarida);
- * ver 0x01->0x02 (+1) ve yeni baytlar: 7B+00+64+00+CE+FF =
- * 123+0+100+0+206+255 = 684.
- *   1855 + 1 + 684 = 2540; 2540 - 9*256 = 2540 - 2304 = 236 = 0xEC.
- * lat_e5/lon_e5 are degrees x 1e-5: 41012345 = 41.012345 deg,
- * 29098765 = 29.098765 deg. */
-static const uint8_t GOLDEN[36] = {
+/* V3 golden vector (38 bytes), independently derived by field and CRC.
+ * 1250.0 m -> 12500 decimetres (0x000030D4 -> D4 30 00 00); signed velocity
+ * -1500 cm/s -> 24 FA; the CRC is sum(bytes 0..36) modulo 256. */
+static const uint8_t GOLDEN[38] = {
+    0xA5, 0x03, 0x34, 0x12, 0x44, 0x33, 0x22, 0x11, 0x03, 0x00,
+    0x00, 0x00, 0xD4, 0x30, 0x00, 0x00, 0x24, 0xFA, 0x09, 0x00,
+    0x79, 0xCC, 0x71, 0x02, 0x0D, 0x03, 0xBC, 0x01, 0xDA, 0x2F,
+    0x0B, 0x7B, 0x00, 0x64, 0x00, 0xCE, 0xFF, 0x0B};
+
+/* Frozen V2 golden image retained to prove decode compatibility. */
+static const uint8_t GOLDEN_V2[36] = {
     0xA5, 0x02, 0x34, 0x12, 0x44, 0x33, 0x22, 0x11, 0x03, 0x00,
     0x00, 0x00, 0xE2, 0x04, 0x24, 0xFA, 0x09, 0x00, 0x79, 0xCC,
     0x71, 0x02, 0x0D, 0x03, 0xBC, 0x01, 0xDA, 0x2F, 0x0B, 0x7B,
@@ -121,34 +110,33 @@ int main(void)
     memset(f, 0xEE, sizeof f); /* poison: nothing may be left unwritten */
     CHECK(lora_build(f, sizeof f, &in) == LORA_FRAME_LEN);
     CHECK(memcmp(f, GOLDEN, LORA_FRAME_LEN) == 0);
-    /* Byte-at-a-time offsets, so a failure names the exact field. */
-    CHECK(f[0] == 0xA5u);                    /* magic   */
-    CHECK(f[1] == 0x02u);                    /* ver     */
-    CHECK(f[2] == 0x34u && f[3] == 0x12u);            /* seq LE      */
-    CHECK(f[4] == 0x44u && f[5] == 0x33u);            /* t_ms LE     */
-    CHECK(f[6] == 0x22u && f[7] == 0x11u);
-    CHECK(f[8] == 0x03u && f[9] == 0x00u);            /* fstate LE   */
-    CHECK(f[10] == 0x00u && f[11] == 0x00u);          /* ek7_mode LE */
-    CHECK(f[12] == 0xE2u && f[13] == 0x04u);          /* alt_m LE    */
-    CHECK(f[14] == 0x24u && f[15] == 0xFAu);          /* vel_cms LE  */
-    CHECK(f[16] == 0x09u && f[17] == 0x00u);          /* sats LE     */
-    CHECK(f[18] == 0x79u && f[19] == 0xCCu);          /* lat_e5 LE   */
-    CHECK(f[20] == 0x71u && f[21] == 0x02u);
-    CHECK(f[22] == 0x0Du && f[23] == 0x03u);          /* lon_e5 LE   */
-    CHECK(f[24] == 0xBCu && f[25] == 0x01u);
-    CHECK(f[26] == 0xDAu && f[27] == 0x2Fu);          /* batt_mv LE  */
-    CHECK(f[28] == 0x0Bu);                            /* flags       */
-    CHECK(f[29] == 0x7Bu && f[30] == 0x00u);          /* tilt 123 LE */
-    CHECK(f[31] == 0x64u && f[32] == 0x00u);          /* lean_x 100  */
-    CHECK(f[33] == 0xCEu && f[34] == 0xFFu);          /* lean_y -50  */
-    CHECK(f[35] == 0xECu);                            /* crc         */
+    /* Byte-at-a-time V3 offsets, so failures name the exact field. */
+    CHECK(f[0] == 0xA5u && f[1] == 0x03u);       /* magic/version */
+    CHECK(f[2] == 0x34u && f[3] == 0x12u);       /* seq */
+    CHECK(f[4] == 0x44u && f[7] == 0x11u);       /* tick */
+    CHECK(f[8] == 0x03u && f[9] == 0x00u);       /* flight state */
+    CHECK(f[10] == 0x00u && f[11] == 0x00u);     /* EK7 mode */
+    CHECK(f[12] == 0xD4u && f[13] == 0x30u &&
+          f[14] == 0x00u && f[15] == 0x00u);     /* 12500 dm */
+    CHECK(f[16] == 0x24u && f[17] == 0xFAu);     /* velocity */
+    CHECK(f[18] == 0x09u && f[19] == 0x00u);     /* satellites */
+    CHECK(f[20] == 0x79u && f[21] == 0xCCu &&
+          f[22] == 0x71u && f[23] == 0x02u);     /* latitude */
+    CHECK(f[24] == 0x0Du && f[25] == 0x03u &&
+          f[26] == 0xBCu && f[27] == 0x01u);     /* longitude */
+    CHECK(f[28] == 0xDAu && f[29] == 0x2Fu);     /* battery */
+    CHECK(f[30] == 0x0Bu);                       /* flags */
+    CHECK(f[31] == 0x7Bu && f[32] == 0x00u);     /* tilt */
+    CHECK(f[33] == 0x64u && f[34] == 0x00u);     /* lean X */
+    CHECK(f[35] == 0xCEu && f[36] == 0xFFu);     /* lean Y */
+    CHECK(f[37] == 0x0Bu);                       /* CRC */
   }
 
   /* ================= CRC ================= */
   {
     lora_frame_t in = sample();
     CHECK(lora_build(f, sizeof f, &in) == LORA_FRAME_LEN);
-    /* Builder's CRC matches an independent sum over bytes 0..34... */
+    /* Builder's CRC matches an independent sum over bytes 0..36... */
     CHECK(lora_crc(f, LORA_CRC_OFF) == f[LORA_OFF_CRC]);
     CHECK(ref_crc(f, LORA_CRC_OFF) == f[LORA_OFF_CRC]);
     /* ...and re-verifying is a zero residual. */
@@ -156,25 +144,25 @@ int main(void)
     CHECK(lora_crc(f, 0u) == 0u);
     CHECK(lora_crc(NULL, 8) == 0u);
     CHECK(lora_verify(f, LORA_FRAME_LEN));
-    CHECK(LORA_CRC_OFF == 35u && LORA_FRAME_LEN == 36u);
+    CHECK(LORA_CRC_OFF == 37u && LORA_FRAME_LEN == 38u);
     /* Magic / version / length rejection. */
-    uint8_t bad[36];
-    memcpy(bad, f, 36);
+    uint8_t bad[LORA_FRAME_LEN];
+    memcpy(bad, f, LORA_FRAME_LEN);
     bad[LORA_OFF_MAGIC] ^= 0xFFu;
-    CHECK(!lora_verify(bad, 36));
-    memcpy(bad, f, 36);
+    CHECK(!lora_verify(bad, LORA_FRAME_LEN));
+    memcpy(bad, f, LORA_FRAME_LEN);
     bad[LORA_OFF_VER] ^= 0x02u;
-    CHECK(!lora_verify(bad, 36));
-    CHECK(!lora_verify(f, 35) && !lora_verify(f, 37));
+    CHECK(!lora_verify(bad, LORA_FRAME_LEN));
+    CHECK(!lora_verify(f, 37) && !lora_verify(f, 39));
     CHECK(!lora_verify(NULL, LORA_FRAME_LEN));
-    /* A single flipped bit anywhere in bytes 0..34 must be caught: the
+    /* A single flipped bit anywhere in bytes 0..36 must be caught: the
      * additive sum changes by a non-zero amount, so the CRC cannot match. */
     int caught = 0;
     for (size_t i = 0; i < LORA_CRC_OFF; i++)
     {
-      memcpy(bad, f, 36);
+      memcpy(bad, f, LORA_FRAME_LEN);
       bad[i] ^= 0x01u;
-      if (!lora_verify(bad, 36))
+      if (!lora_verify(bad, LORA_FRAME_LEN))
       {
         caught++;
       }
@@ -182,12 +170,12 @@ int main(void)
     CHECK(caught == (int)LORA_CRC_OFF);
   }
 
-  /* ================= bounds: no write past byte 35 ================= */
+  /* ================= bounds: no write past byte 37 ================= */
   {
     lora_frame_t in = sample();
     memset(f, 0xEE, sizeof f);
     CHECK(lora_build(f, sizeof f, &in) == LORA_FRAME_LEN);
-    CHECK(LORA_FRAME_LEN == 36u);
+    CHECK(LORA_FRAME_LEN == 38u);
     for (size_t i = LORA_FRAME_LEN; i < sizeof f; i++)
     {
       CHECK(f[i] == 0xEEu); /* the guard byte survived */
@@ -202,15 +190,15 @@ int main(void)
       CHECK(memcmp(exact, GOLDEN, LORA_FRAME_LEN) == 0);
       free(exact);
     }
-    /* No unused gap: every byte 0..35 is accounted for by a field. */
+    /* No unused gap: every byte 0..37 is accounted for by a field. */
     CHECK(LORA_OFF_MAGIC == 0u && LORA_OFF_VER == 1u && LORA_OFF_SEQ == 2u &&
           LORA_OFF_T_MS == 4u && LORA_OFF_FLIGHT_STATE == 8u &&
-          LORA_OFF_EK7_MODE == 10u && LORA_OFF_ALT_M == 12u &&
-          LORA_OFF_VEL_CMS == 14u && LORA_OFF_SATS == 16u &&
-          LORA_OFF_LAT_E5 == 18u && LORA_OFF_LON_E5 == 22u &&
-          LORA_OFF_BATT_MV == 26u && LORA_OFF_FLAGS == 28u &&
-          LORA_OFF_TILT == 29u && LORA_OFF_LEANX == 31u &&
-          LORA_OFF_LEANY == 33u && LORA_OFF_CRC == 35u);
+          LORA_OFF_EK7_MODE == 10u && LORA_OFF_ALT_DM == 12u &&
+          LORA_OFF_VEL_CMS == 16u && LORA_OFF_SATS == 18u &&
+          LORA_OFF_LAT_E5 == 20u && LORA_OFF_LON_E5 == 24u &&
+          LORA_OFF_BATT_MV == 28u && LORA_OFF_FLAGS == 30u &&
+          LORA_OFF_TILT == 31u && LORA_OFF_LEANX == 33u &&
+          LORA_OFF_LEANY == 35u && LORA_OFF_CRC == 37u);
   }
 
   /* ================= argument guards ================= */
@@ -281,7 +269,8 @@ int main(void)
     CHECK(out.batt_mv == 0u);
     CHECK(out.seq == 7u && out.t_ms == 12345u);
     /* The sentinels are visible on the wire at the documented offsets. */
-    CHECK(f[LORA_OFF_ALT_M] == 0x00u && f[LORA_OFF_ALT_M + 1u] == 0x80u);
+    CHECK(f[LORA_OFF_ALT_DM] == 0x00u && f[LORA_OFF_ALT_DM + 1u] == 0x00u &&
+          f[LORA_OFF_ALT_DM + 2u] == 0x00u && f[LORA_OFF_ALT_DM + 3u] == 0x80u);
     CHECK(f[LORA_OFF_VEL_CMS] == 0x00u && f[LORA_OFF_VEL_CMS + 1u] == 0x80u);
     CHECK(f[LORA_OFF_SATS] == 0x09u && f[LORA_OFF_SATS + 1u] == 0x00u);
     CHECK(f[LORA_OFF_LAT_E5] == 0x00u && f[LORA_OFF_LON_E5] == 0x00u);
@@ -315,21 +304,25 @@ int main(void)
       t.alt_valid = true;
       t.alt_m = real_alts_m[i];
       lora_frame_from_tlm(&fr, 11u, 76543u, &t);
-      /* 1: no truncation, no saturation, no sentinel. */
+      /* 1: whole-metre compatibility field and V3 decimetres remain valid. */
       CHECK(fr.alt_m == (int16_t)real_alts_m[i]);
+      CHECK(fr.alt_dm == (int32_t)(real_alts_m[i] * 10.0f));
       CHECK(fr.alt_m != LORA_ALT_INVALID);
       CHECK(fr.alt_m == 1250 || fr.alt_m == 3000);
       memset(f, 0xEE, sizeof f);
       CHECK(lora_build(f, sizeof f, &fr) == LORA_FRAME_LEN);
       CHECK(lora_verify(f, LORA_FRAME_LEN));
-      /* 2: the exact expected little-endian bytes for the whole-metre field. */
-      uint16_t u = (uint16_t)real_alts_m[i];
-      CHECK(f[LORA_OFF_ALT_M] == (uint8_t)(u & 0xFFu));
-      CHECK(f[LORA_OFF_ALT_M + 1u] == (uint8_t)((u >> 8) & 0xFFu));
+      /* 2: exact signed-decimetre little-endian field. */
+      uint32_t u = (uint32_t)(real_alts_m[i] * 10.0f);
+      CHECK(f[LORA_OFF_ALT_DM] == (uint8_t)(u & 0xFFu));
+      CHECK(f[LORA_OFF_ALT_DM + 1u] == (uint8_t)((u >> 8) & 0xFFu));
+      CHECK(f[LORA_OFF_ALT_DM + 2u] == (uint8_t)((u >> 16) & 0xFFu));
+      CHECK(f[LORA_OFF_ALT_DM + 3u] == (uint8_t)((u >> 24) & 0xFFu));
       /* 3: the ground station's read-back is exact. */
       memset(&out, 0, sizeof out);
       CHECK(lora_parse(f, LORA_FRAME_LEN, &out));
       CHECK(out.alt_m == (int16_t)real_alts_m[i]);
+      CHECK(out.alt_dm == (int32_t)(real_alts_m[i] * 10.0f));
       /* 4: through the real driver path too (poll + parse). The driver
        * emits the air image (fixed header + core when LORA_FIXED_HDR);
        * the ground station strips the 3 header bytes before parsing. */
@@ -345,6 +338,7 @@ int main(void)
       CHECK(lora_parse(f, LORA_FRAME_LEN, &out));
 #endif
       CHECK(out.alt_m == (int16_t)real_alts_m[i]);
+      CHECK(out.alt_dm == (int32_t)(real_alts_m[i] * 10.0f));
       CHECK(out.alt_m != LORA_ALT_INVALID);
       CHECK(out.seq == 0u && out.t_ms == 0u);
       /* 5: a 20 km synthetic ceiling is still inside the range. */
@@ -363,15 +357,23 @@ int main(void)
     CHECK(fr.vel_cms == -1500); /* -15.0 m/s -> -1500 cm/s */
     t.alt_m = -1250.0f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
-    CHECK(fr.alt_m == -1250);
-    /* Sub-metre resolution is rounded to the nearest metre, never truncated
-     * low on a long climb. */
+    CHECK(fr.alt_m == -1250 && fr.alt_dm == -12500);
+    t.alt_m = -0.4f;
+    lora_frame_from_tlm(&fr, 1u, 0u, &t);
+    CHECK(fr.alt_dm == -4); /* negative below the pad is preserved */
+    uint8_t frac[LORA_FRAME_LEN];
+    lora_frame_t frac_out;
+    CHECK(lora_build(frac, sizeof frac, &fr) == LORA_FRAME_LEN);
+    CHECK(lora_parse(frac, sizeof frac, &frac_out));
+    CHECK(frac_out.alt_dm == -4 && frac_out.alt_m == 0);
+    t.alt_m = -1250.0f;
+    /* Legacy whole-metre view rounds; new V3 wire value retains one decimal. */
     t.alt_m = 1250.6f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
-    CHECK(fr.alt_m == 1251);
+    CHECK(fr.alt_m == 1251 && fr.alt_dm == 12506);
     t.alt_m = -1250.6f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
-    CHECK(fr.alt_m == -1251);
+    CHECK(fr.alt_m == -1251 && fr.alt_dm == -12506);
     t.alt_m = 1250.0f;
     t.vel_mps = 15.0f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
@@ -384,10 +386,10 @@ int main(void)
     CHECK(fr.alt_m == 32767 && fr.alt_m != LORA_ALT_INVALID);
     t.alt_m = 40000.0f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
-    CHECK(fr.alt_m == LORA_ALT_INVALID);
+    CHECK(fr.alt_m == LORA_ALT_INVALID && fr.alt_dm == 400000);
     t.alt_m = -40000.0f;
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
-    CHECK(fr.alt_m == LORA_ALT_INVALID);
+    CHECK(fr.alt_m == LORA_ALT_INVALID && fr.alt_dm == -400000);
     t.alt_m = 1250.0f;
     t.vel_mps = 327.0f; /* 32700 cm/s: aralikta, kesme aynen */
     lora_frame_from_tlm(&fr, 1u, 0u, &t);
@@ -450,8 +452,7 @@ int main(void)
       CHECK(out.flight_state == t.flight_state);
       CHECK(out.lat_e5 == t.lat_e5 && out.lon_e5 == t.lon_e5);
     }
-    /* Too early: nothing goes out and the counters do not move. */
-    CHECK(!lora_poll(100u, &t, tx, sizeof tx));
+    /* Just before the 100 ms deadline: no packet; the exact deadline sends. */
     CHECK(!lora_poll(LORA_SEND_INTERVAL_MS - 1u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 1u && lora_seq() == 1u);
     CHECK(lora_poll(LORA_SEND_INTERVAL_MS, &t, tx, sizeof tx));
@@ -463,54 +464,46 @@ int main(void)
       CHECK(out.t_ms == LORA_SEND_INTERVAL_MS);
     }
     /* Cadence is a pure function of the flight state; pad and flight both
-     * run 5 Hz (200 ms) by request. */
-    CHECK(LORA_SEND_INTERVAL_MS == 200u);
-    CHECK(LORA_SEND_INTERVAL_WAIT_MS == 200u);
-    CHECK(lora_interval_ms((uint16_t)FLIGHT_WAIT_FOR_LAUNCH) == 200u);
-    CHECK(lora_interval_ms((uint16_t)FLIGHT_ASCENT) == 200u);
-    CHECK(lora_interval_ms((uint16_t)FLIGHT_FAULT) == 200u);
+     * both target 10 Hz (100 ms). */
+    CHECK(LORA_SEND_INTERVAL_MS == 100u);
+    CHECK(LORA_SEND_INTERVAL_WAIT_MS == 100u);
+    CHECK(lora_interval_ms((uint16_t)FLIGHT_WAIT_FOR_LAUNCH) == 100u);
+    CHECK(lora_interval_ms((uint16_t)FLIGHT_ASCENT) == 100u);
+    CHECK(lora_interval_ms((uint16_t)FLIGHT_FAULT) == 100u);
     CHECK(lora_interval_ms(0u) >= LORA_SEND_GAP_MS);
     CHECK(lora_interval_ms(0xFFFFu) >= LORA_SEND_GAP_MS);
-    /* Clear the outstanding 200 ms deadline first, so the next gate is the
-     * one armed by the pad interval. */
-    CHECK(lora_poll(LORA_SEND_INTERVAL_MS + LORA_SEND_INTERVAL_MS, &t, tx,
-                    sizeof tx));
+    /* Clear the outstanding 100 ms deadline before switching the flight state. */
+    CHECK(lora_poll(200u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 3u);
-    /* Absolute timeline so far, all in ASCENT (200 ms): sends at 0, 200 and
-     * 400 -> the outstanding deadline is 600. On the pad the period is also
-     * 200 ms. (The interval in force is the one read at the send that armed
-     * the deadline, not one re-read afterwards.) */
-    CHECK(lora_poll(600u, &t, tx, sizeof tx)); /* still ASCENT: next = 800 */
+    /* 10 Hz absolute timeline: sends at 0, 100, 200; next deadline 300. */
+    CHECK(lora_poll(300u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 4u);
-    CHECK(lora_poll(800u, &t, tx, sizeof tx)); /* still ASCENT: next = 1000 */
+    CHECK(lora_poll(400u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 5u);
     t.flight_state = (uint16_t)FLIGHT_WAIT_FOR_LAUNCH;
-    CHECK(lora_poll(1000u, &t, tx, sizeof tx)); /* pad: next = 1000 + 200 */
+    CHECK(lora_poll(500u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 6u);
-    CHECK(!lora_poll(1199u, &t, tx, sizeof tx)); /* 199 ms: too early */
+    CHECK(!lora_poll(599u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 6u);
-    CHECK(lora_poll(1200u, &t, tx, sizeof tx)); /* 200 ms: due */
+    CHECK(lora_poll(600u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 7u);
     t.flight_state = (uint16_t)FLIGHT_ASCENT;
   }
 
   /* ================= 200 s soak at ~1 kHz loop rate =================
-   * Bounded by the counter, not by assertion spam: vade boot'taki 0'a
-   * cipali 200 ms izgara uzerindedir (birikimli): ilk yoklama (1 ms)
-   * hemen gonderir (vade 0 dolmustur), sonrasi 200, 400, ..., 200000
-   * izgarasinda -> 1 + 1000 = 1001 paket, sifir drop, faz kaymasi yok. */
+   * 100 ms cadence over 200 seconds: first packet immediately, then
+   * every 100 ms through 200000 ms -> 2001 packets, zero drops. */
   {
     lora_tlm_t t = tlm();
     uint8_t tx[64];
     lora_init(0); /* fresh 0 deadline: first send at tick 0 */
-    /* 200001 ms of ticks at a 200 ms cadence: ilk gonderim 1 ms'de
-     * (vade 0 hemen dolar), sonrasi 200, 400, ..., 200000 izgarasi. */
+    /* Dense 1 ms polling with a 100 ms cadence: packets at 1, 100, ..., 200000. */
     uint32_t ok0 = lora_ok_count();
     for (uint32_t ms = 1u; ms <= 200000u; ms++)
     {
       (void)lora_poll(ms, &t, NULL, 0u); /* NULL buffer: internal fallback */
     }
-    CHECK(lora_ok_count() - ok0 == 1001u); /* 1 + 200000 / 200 */
+    CHECK(lora_ok_count() - ok0 == 2001u); /* 1 + 200000 / 200 */
     CHECK(lora_drop_count() == 0u);
     /* The internal fallback buffer still produces a well-formed frame. */
     CHECK(lora_poll(200000u + LORA_SEND_INTERVAL_MS, &t, tx, sizeof tx));
@@ -581,18 +574,17 @@ int main(void)
     lora_tlm_t t = tlm();
     uint8_t tx[64];
     lora_init(0);
-    CHECK(lora_poll(1000u, &t, tx, sizeof tx)); /* deadline now 1200 */
+    CHECK(lora_poll(1000u, &t, tx, sizeof tx)); /* deadline now 1100 */
     uint32_t ok0 = lora_ok_count();
-    /* Jump to just before the wrap: the 200 ms gap has not elapsed. */
+    /* Jump across the wrap; one hundred milliseconds are required. */
     CHECK(!lora_poll(0xFFFFFFF0u, &t, tx, sizeof tx));
     CHECK(!lora_poll(0x00000000u, &t, tx, sizeof tx)); /* post-wrap: not due */
-    CHECK(lora_poll(0x000004B0u, &t, tx, sizeof tx)); /* 1200, due */
+    CHECK(lora_poll(0x0000044Cu, &t, tx, sizeof tx)); /* 1100, due */
     CHECK(lora_ok_count() - ok0 == 1u);
-    /* That send armed deadline 1400 (1200 + 200), also reached after the
-     * wrap: one tick short must stay silent, the deadline itself must fire. */
-    CHECK(!lora_poll(0x00000577u, &t, tx, sizeof tx)); /* 1399 */
-    CHECK(!lora_poll(0x000004AFu, &t, tx, sizeof tx)); /* before 1200 */
-    CHECK(lora_poll(0x00000578u, &t, tx, sizeof tx)); /* 1400, due */
+    /* That send armed deadline 1200 (1100 + 100): 1199 is silent. */
+    CHECK(!lora_poll(0x000004AFu, &t, tx, sizeof tx)); /* 1199 */
+    CHECK(!lora_poll(0x0000044Bu, &t, tx, sizeof tx)); /* before 1100 */
+    CHECK(lora_poll(0x000004B0u, &t, tx, sizeof tx)); /* 1200, due */
   }
 
   /* ================= SIT/SUT gate (LORA_ALLOW_SIT_SUT == 0) ============= */
@@ -658,7 +650,7 @@ int main(void)
     CHECK((uint16_t)FLIGHT_ASCENT == 3u);
     CHECK((uint16_t)FLIGHT_APOGEE_CONFIRMED == 4u);
     CHECK((uint16_t)FLIGHT_FAULT == 10u);
-    CHECK(LORA_MAGIC == 0xA5u && LORA_VER == 0x02u);
+    CHECK(LORA_MAGIC == 0xA5u && LORA_VER == 0x03u);
     CHECK(LORA_I16_INVALID == (int16_t)-32768);
     /* Altitude sentinel: 0x8000 on the wire, outside the real -32767..+32767
      * metre range so it can only ever mean "no altitude". */
@@ -671,11 +663,10 @@ int main(void)
           LORA_F_YELLOW_LED == 4u && LORA_F_RED_LED == 8u);
     /* Every transmit is bounded by 50 ms: a lost packet cannot cost more. */
     CHECK(LORA_TX_TMO_MS <= 50u);
-    /* 36 bytes at 9600 8N1 = 360 bit times = 37.5 ms of air time; the
-     * cadence clears that many times over, and the 400-byte module buffer
-     * drains in ~417 ms at 960 B/s. */
+    /* V3 air image is 41 bytes. UART feed time at 9600 8N1 is < 43 ms;
+     * 100 ms leaves room for the RF transmission and receiver parsing. */
     CHECK(LORA_SEND_GAP_MS > 31u);
-    CHECK(LORA_SEND_INTERVAL_MS >= 2u * LORA_SEND_GAP_MS);
+    CHECK(LORA_SEND_INTERVAL_MS >= LORA_SEND_GAP_MS);
     CHECK(LORA_SEND_INTERVAL_WAIT_MS >= LORA_SEND_INTERVAL_MS);
   }
 
@@ -704,26 +695,24 @@ int main(void)
     CHECK(lora_build_air(air, sizeof air, NULL) == 0u);
   }
 
-  /* ================= legacy v1 frames must FAIL v2 parse ============ */
+  /* ================= backwards compatibility: V1/V2 remain readable === */
   {
-    /* 30 baytlik v1 cerceve (ver 0x01): uzunluk kapisinda reddedilir. */
-    uint8_t v1[30];
-    memcpy(v1, GOLDEN, 30);
-    v1[1] = 0x01u;
-    {
-      unsigned s = 0;
-      for (size_t i = 0; i < 29u; i++)
-      {
-        s = (s + v1[i]) & 0xFFu;
-      }
-      v1[29] = (uint8_t)s;
-    }
+    uint8_t v1[LORA_V1_FRAME_LEN];
     lora_frame_t out;
-    CHECK(!lora_verify(v1, 30));
-    CHECK(!lora_parse(v1, 30, &out));
-    /* 30 bayt v2 CRC ile bile olsa uzunluk tutmaz. */
-    CHECK(!lora_verify(GOLDEN, 30));
-    CHECK(!lora_parse(GOLDEN, 30, &out));
+    memcpy(v1, GOLDEN_V2, sizeof v1);
+    v1[1] = LORA_VER_V1;
+    v1[29] = ref_crc(v1, 29u);
+    CHECK(lora_verify(v1, sizeof v1));
+    CHECK(lora_parse(v1, sizeof v1, &out));
+    CHECK(out.alt_m == 1250 && out.alt_dm == 12500);
+    CHECK(out.tilt_ddeg == LORA_TILT_INVALID);
+    CHECK(!lora_verify(v1, sizeof v1 + 1u));
+    CHECK(lora_verify(GOLDEN_V2, sizeof GOLDEN_V2));
+    CHECK(lora_parse(GOLDEN_V2, sizeof GOLDEN_V2, &out));
+    CHECK(out.alt_m == 1250 && out.alt_dm == 12500);
+    CHECK(out.tilt_ddeg == 123u && out.lean_x == 100 && out.lean_y == -50);
+    CHECK(!lora_verify(GOLDEN_V2, LORA_V1_FRAME_LEN));
+    CHECK(!lora_parse(GOLDEN, LORA_V2_FRAME_LEN, &out));
   }
 
   /* ================= tilt/lean donusumleri ================= */
@@ -818,23 +807,23 @@ int main(void)
     lora_tlm_t t = tlm();
     uint8_t tx[64];
     lora_init(0);
-    CHECK(lora_poll(0u, &t, tx, sizeof tx));   /* vade 200 */
+    CHECK(lora_poll(0u, &t, tx, sizeof tx));   /* deadline 100 */
     CHECK(lora_ok_count() == 1u);
-    CHECK(lora_poll(350u, &t, tx, sizeof tx)); /* gec gonderim, vade 400'de */
+    CHECK(lora_poll(250u, &t, tx, sizeof tx)); /* late; missed slots skipped */
     CHECK(lora_ok_count() == 2u);
-    CHECK(!lora_poll(399u, &t, tx, sizeof tx));
-    CHECK(lora_poll(400u, &t, tx, sizeof tx)); /* faz korundu */
+    CHECK(!lora_poll(349u, &t, tx, sizeof tx));
+    CHECK(lora_poll(350u, &t, tx, sizeof tx)); /* phase reset only after long stall */
     CHECK(lora_ok_count() == 3u);
-    CHECK(!lora_poll(599u, &t, tx, sizeof tx));
-    CHECK(lora_poll(600u, &t, tx, sizeof tx)); /* vade 800 */
+    CHECK(!lora_poll(449u, &t, tx, sizeof tx));
+    CHECK(lora_poll(450u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 4u);
-    /* 4.4 sn duraklama: tek paket, vade 5200'e kurulur, patlama yok. */
+    /* Long stall: one packet, the missed 10 Hz slots are not replayed. */
     uint32_t ok0 = lora_ok_count();
     CHECK(lora_poll(5000u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() - ok0 == 1u);
     CHECK(lora_drop_count() == 0u);
-    CHECK(!lora_poll(5199u, &t, tx, sizeof tx));
-    CHECK(lora_poll(5200u, &t, tx, sizeof tx));
+    CHECK(!lora_poll(5099u, &t, tx, sizeof tx));
+    CHECK(lora_poll(5100u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() - ok0 == 2u);
   }
 
@@ -904,13 +893,13 @@ int main(void)
     CHECK(lora_ok_count() == 0u && lora_seq() == 0u);
     CHECK(lora_drop_count() == 0u); /* drop'a karismadi */
     CHECK(lora_txerr_count() == 0u && lora_reinit_count() == 0u);
-    /* Vade tuketildi: 200'den once sessiz (sayac bile kipirdamaz). */
-    CHECK(!lora_poll(100u, &t, tx, sizeof tx));
+    /* Deadline is consumed: no retry until 100 ms after the skipped slot. */
+    CHECK(!lora_poll(99u, &t, tx, sizeof tx));
     CHECK(lora_airbusy_count() == 1u);
     /* AUX bosalinca ayni fazdan devam: ilk basarili paket seq 0 tasir
      * (atlama seq tuketmedi). */
     lora_host_set_aux_low(false);
-    CHECK(lora_poll(200u, &t, tx, sizeof tx));
+    CHECK(lora_poll(100u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 1u && lora_seq() == 1u);
     CHECK(lora_airbusy_count() == 1u);
     {
@@ -920,15 +909,15 @@ int main(void)
     }
     /* Ust uste atlama: her vade-tuketimi +1, ok/seq/drop sabit. */
     lora_host_set_aux_low(true);
-    CHECK(!lora_poll(400u, &t, tx, sizeof tx));
-    CHECK(!lora_poll(600u, &t, tx, sizeof tx));
+    CHECK(!lora_poll(200u, &t, tx, sizeof tx));
+    CHECK(!lora_poll(300u, &t, tx, sizeof tx));
     CHECK(lora_airbusy_count() == 3u);
     CHECK(lora_ok_count() == 1u && lora_seq() == 1u);
     CHECK(lora_drop_count() == 0u);
-    /* Kaldigi fazdan devam: vade 800'de dolar, 799 sessiz. */
+    /* Resume on the 400 ms slot; the missed slots do not burst/replay. */
     lora_host_set_aux_low(false);
-    CHECK(!lora_poll(799u, &t, tx, sizeof tx));
-    CHECK(lora_poll(800u, &t, tx, sizeof tx));
+    CHECK(!lora_poll(399u, &t, tx, sizeof tx));
+    CHECK(lora_poll(400u, &t, tx, sizeof tx));
     CHECK(lora_ok_count() == 2u && lora_seq() == 2u);
     /* lora_init airbusy'yi de sifirlar, enjeksiyonu temizler. */
     lora_init(0);
@@ -937,106 +926,75 @@ int main(void)
     CHECK(lora_ok_count() == 1u && lora_airbusy_count() == 0u);
   }
 
-  /* ================= baud geri-donus karari (saf, HAL'siz) =============
-   * Hedef cfg motoru da bu karari kullanir: HI (REG0=0xC5) tam eslesme ->
-   * 57600 link; her baska durum (9600 imaji, bozuk imaj, NULL) -> 9600'de
-   * kal (huart yazisiz degismez). Iki imaj yalniz REG0'da ayrilir: hava
-   * hizi/guc/kanal bitleri bit-bit ayni (yasak bolgeye dokunulmadi).
-   * Iki imajin hava bitleri de ayni ve 19,2 kbps'tir (101, Tablo 7-2). */
+  /* ================= UART/RF rate configuration policy =================== */
   {
-    CHECK(LORA_LINK_BAUD == 57600u);
+    CHECK(LORA_LINK_BAUD == 9600u);
     CHECK(LORA_LINK_BAUD_FALLBACK == 9600u);
-    CHECK(LORA_REG0_9600 == 0x65u && LORA_REG0_57600 == 0xC5u);
-    /* Yalniz ust 3 bit (UART baud) degisir: alt 5 bit (parite + hava) ayni. */
-    CHECK((LORA_REG0_57600 & 0x1Fu) == (LORA_REG0_9600 & 0x1Fu));
-    /* Hava bitleri iki imajda da 101 = 19,2 kbps. */
-    CHECK((LORA_REG0_9600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_19K2_BITS);
-    CHECK((LORA_REG0_57600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_19K2_BITS);
-    CHECK(LORA_CFG_EXPECTED[2] == LORA_REG0_9600);
-    CHECK(LORA_CFG_EXPECTED_HI[2] == LORA_REG0_57600);
-    for (uint8_t i = 0u; i < LORA_CFG_LEN; i++)
-    {
-      if (i == 2u)
-      {
-        continue; /* REG0: beklenen tek fark */
-      }
-      CHECK(LORA_CFG_EXPECTED_HI[i] == LORA_CFG_EXPECTED[i]);
-    }
-    /* Karar tablosu: HI -> 57600, gerisi -> 9600. */
-    CHECK(lora_cfg_verified_baud(LORA_CFG_EXPECTED_HI) == LORA_LINK_BAUD);
-    CHECK(lora_cfg_verified_baud(LORA_CFG_EXPECTED_HI) == 57600u);
-    CHECK(lora_cfg_verified_baud(LORA_CFG_EXPECTED) ==
-          LORA_LINK_BAUD_FALLBACK);
-    {
-      uint8_t bozuk[LORA_CFG_LEN];
-      memcpy(bozuk, LORA_CFG_EXPECTED_HI, LORA_CFG_LEN);
-      bozuk[2] ^= 0x01u; /* tek bit: ne HI ne 9600 imaji */
-      CHECK(lora_cfg_verified_baud(bozuk) == LORA_LINK_BAUD_FALLBACK);
-      CHECK(lora_cfg_verified_baud(bozuk) == 9600u);
-    }
-    CHECK(lora_cfg_verified_baud(NULL) == LORA_LINK_BAUD_FALLBACK);
-    /* Varsayilan link 9600: dogrulama olmadan baud degismez. */
-    lora_init(0);
-    CHECK(lora_link_baud() == LORA_LINK_BAUD_FALLBACK);
-    CHECK(lora_link_baud() == 9600u);
+    CHECK(LORA_REG0_9600 == 0x63u && LORA_REG0_57600 == 0xC3u);
+    CHECK((LORA_REG0_9600 >> 5) == 0x03u); /* 011 = 9600 UART */
+    CHECK((LORA_REG0_57600 >> 5) == 0x06u); /* reserved 110 = 57600 UART */
+    CHECK(((LORA_REG0_9600 >> 3) & 0x03u) == 0u); /* 8N1 */
+    CHECK((LORA_REG0_9600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_4K8_BITS);
+    CHECK((LORA_REG0_57600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_4K8_BITS);
+    CHECK(LORA_AIR_RATE_BPS == 4800u);
+    CHECK(LORA_CFG_EXPECTED[2] == 0x63u);
+    CHECK(LORA_CFG_COMMON[2] == 0x63u);
+    CHECK(LORA_CFG_EXPECTED[3] == 0x00u); /* 22 dBm hardware max */
+    CHECK(LORA_TX_POWER_DBM == 22u);
+    CHECK(LORA_CFG_EXPECTED[4] == 0x17u); /* 873.125 MHz */
+    CHECK(LORA_CFG_EXPECTED[5] == 0x00u); /* transparent mode */
+    CHECK(LORA_AIR_LEN == 41u); /* 3 fixed-header bytes + 38-byte V3 */
+    CHECK(LORA_SEND_INTERVAL_MS == 100u && LORA_SEND_INTERVAL_WAIT_MS == 100u);
+    CHECK(LORA_SEND_INTERVAL_MS * LORA_AIR_RATE_BPS >= LORA_AIR_LEN * 8u * 1000u);
+    CHECK((LORA_AIR_LEN * 10u * 1000u) / LORA_LINK_BAUD < LORA_SEND_INTERVAL_MS);
+    CHECK(lora_cfg_verified_baud(LORA_CFG_EXPECTED) == 9600u);
+    CHECK(lora_cfg_verified_baud(NULL) == 9600u);
   }
 
-  /* ================= imaj cozumu + RF tek-nokta (kilavuz Tablo 7-2/7-3) ==
-   * Mevcut imaj 00 00 65 00 17 00 (fabrika 00 00 62 00 17 00, Tablo 7-3;
-   * tek fark REG0 hava bitleri 010 -> 101):
-   *   ADDH/ADDL = 0x0000, REG0 = 0x65, REG1 = 0x00, CH = 0x17, REG3 = 0x00.
-   *   REG0 = 011_00_101: UART 011 = 9600, parite 00 = 8N1, hava 101 = 19,2k.
-   *   REG1 = 00: alt-paket 200 B, ortam-RSSI kapali, guc 00 = 22 dBm (MAX).
-   *   REG2 = 0x17 = 23: 850.125 + 23 = 873.125 MHz.
-   *   REG3 = 00: seffaf iletim, RSSI bayti yok, LBT yok.
-   * Guc ZATEN tavandadir (artirilamaz, 22 dBm). IKI modul de ayni havada
-   * OLMALIDIR (19,2k): HI/LO yalniz UART bitlerinde ayrilir, asagida
-   * kilitlenir. */
+  /* ================= E220 C0/C2 write command framing ==================== */
   {
-    CHECK(LORA_CFG_LEN == 6u);
-    {
-      const uint8_t fabrika[6] = {0x00u, 0x00u, 0x62u, 0x00u, 0x17u, 0x00u};
-      const uint8_t yeni[6] = {0x00u, 0x00u, 0x65u, 0x00u, 0x17u, 0x00u};
-      CHECK(memcmp(LORA_CFG_EXPECTED, yeni, 6) == 0);
-      /* Fabrikadan tek fark hava bitleri: 0x62 ^ 0x65 = 0x07 (bit2-0). */
-      CHECK((fabrika[2] ^ LORA_CFG_EXPECTED[2]) == LORA_REG0_AIR_MASK);
-      CHECK((LORA_CFG_EXPECTED[2] & LORA_REG0_AIR_MASK) ==
-            LORA_REG0_AIR_19K2_BITS);
-      CHECK(LORA_CFG_EXPECTED_HI[0] == 0x00u &&
-            LORA_CFG_EXPECTED_HI[1] == 0x00u);
-      CHECK(LORA_CFG_EXPECTED_HI[3] == 0x00u &&
-            LORA_CFG_EXPECTED_HI[4] == 0x17u &&
-            LORA_CFG_EXPECTED_HI[5] == 0x00u);
-    }
-    /* REG0 cozumu: iki imajda da parite/hava bitleri ayni, yalniz UART. */
-    CHECK((LORA_REG0_9600 >> 5) == 0x03u);   /* 011 = 9600 */
-    CHECK((LORA_REG0_57600 >> 5) == 0x06u);  /* 110 = 57600 */
-    CHECK(((LORA_REG0_9600 >> 3) & 0x03u) == 0x00u); /* 8N1 */
-    CHECK((LORA_REG0_9600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_19K2_BITS);
-    CHECK((LORA_REG0_57600 & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_19K2_BITS);
-    CHECK(LORA_AIR_RATE_BPS == 19200u);
-    /* REG1 cozumu: guc bitleri 00 = 22 dBm = tavan (MAX). */
-    CHECK((LORA_CFG_EXPECTED[3] & LORA_REG1_POWER_MASK) ==
-          LORA_REG1_POWER_22DBM_BITS);
-    CHECK(LORA_TX_POWER_DBM == 22u);
-    CHECK((LORA_CFG_EXPECTED[3] & LORA_REG1_SUBPKT_MASK) ==
-          LORA_REG1_SUBPKT_200B_BITS);
-    CHECK(LORA_REG1_IMAGE == LORA_CFG_EXPECTED[3]);
-    /* Kanal cozumu: 0x17 = 23 -> 850125 + 23*1000 = 873125 kHz. */
-    CHECK(LORA_REG2_CH == 0x17u);
-    CHECK(LORA_CFG_EXPECTED[4] == LORA_REG2_CH);
-    CHECK(850125u + (uint32_t)LORA_REG2_CH * 1000u == 873125u);
-    CHECK(LORA_REG3_TRANSPARENT_BITS == LORA_CFG_EXPECTED[5]);
-    /* Hava suresi hesabi (HESAP, olcum degil): 39 baytlik hava imaji
-     * 19,2 kbps'te 39*8 = 312 bit -> 312/19200 = 16,25 ms seri-esdeger;
-     * preambul/baslikla ~25-35 ms. 200 ms kadansta doluluk %8-18, marj
-     * ~165-175 ms: AUX her kapida BOSTA olmali, 5 Hz surdurulebilir.
-     * Surdurulebilir ham hiz 39/0.2 = 195 B/s < 19200/8 = 2400 B/s kapasite. */
-    CHECK(LORA_AIR_LEN == 39u);
-    CHECK((39u * 8u * 1000u) / 19200u == 16u); /* seri-esdeger ms (16,25) */
-    CHECK(LORA_SEND_INTERVAL_MS == 200u);
-    CHECK((39u * 1000u) / LORA_SEND_INTERVAL_MS == 195u); /* B/s ham */
-    CHECK((19200u / 8u) == 2400u);                        /* B/s kapasite */
+    const uint8_t data[8] = {0x00u,0x00u,0x63u,0x00u,0x17u,0x00u,0x00u,0x00u};
+    uint8_t cmd[12];
+    memset(cmd, 0xAA, sizeof cmd);
+    CHECK(lora_cfg_write_frame(0xC0u, 0x00u, 8u, data, cmd, sizeof cmd) == 11u);
+    CHECK(cmd[0] == 0xC0u && cmd[1] == 0x00u && cmd[2] == 0x08u);
+    CHECK(memcmp(&cmd[3], data, sizeof data) == 0);
+    CHECK(cmd[11] == 0xAAu); /* exact write bounds */
+    memset(cmd, 0xAA, sizeof cmd);
+    CHECK(lora_cfg_write_frame(0xC2u, 0x00u, 8u, data, cmd, sizeof cmd) == 11u);
+    CHECK(cmd[0] == 0xC2u && cmd[1] == 0x00u && cmd[2] == 0x08u);
+    CHECK(memcmp(&cmd[3], data, sizeof data) == 0);
+    CHECK(cmd[11] == 0xAAu); /* exact write bounds */
+    CHECK(lora_cfg_write_frame(0xC0u, 0u, 8u, data, cmd, 10u) == 0u);
+    CHECK(lora_cfg_write_frame(0xC2u, 0u, 8u, data, cmd, 10u) == 0u);
+    CHECK(lora_cfg_write_frame(0xC1u, 0u, 8u, data, cmd, sizeof cmd) == 0u);
+    CHECK(lora_cfg_write_frame(0xC2u, 0u, 0u, data, cmd, sizeof cmd) == 0u);
+    CHECK(lora_cfg_write_frame(0xC2u, 0u, 9u, data, cmd, sizeof cmd) == 0u);
+    CHECK(lora_cfg_write_frame(0xC2u, 0u, 8u, NULL, cmd, sizeof cmd) == 0u);
+    CHECK(lora_cfg_write_frame(0xC2u, 0u, 8u, data, NULL, sizeof cmd) == 0u);
+  }
+
+  /* ================= RF register image: full datasheet contract ========== */
+  {
+    const uint8_t factory[6] = {0x00u, 0x00u, 0x62u, 0x00u, 0x17u, 0x00u};
+    const uint8_t target[6]  = {0x00u, 0x00u, 0x63u, 0x00u, 0x17u, 0x00u};
+    CHECK(memcmp(LORA_CFG_EXPECTED, target, sizeof target) == 0);
+    CHECK((factory[2] & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_2K4_BITS);
+    CHECK((target[2] & LORA_REG0_AIR_MASK) == LORA_REG0_AIR_4K8_BITS);
+    CHECK((target[2] & 0xF8u) == (factory[2] & 0xF8u)); /* same UART/parity */
+    CHECK((target[3] & LORA_REG1_POWER_MASK) == 0u); /* 22 dBm maximum */
+    CHECK((target[3] & LORA_REG1_SUBPKT_MASK) == 0u); /* 200-byte subpacket */
+    CHECK(target[4] == 0x17u && target[5] == 0u);
+    CHECK(850125u + (uint32_t)target[4] * 1000u == 873125u);
+    uint8_t cmd[8];
+    CHECK(lora_cfg_common_img(cmd, true));
+    CHECK(memcmp(cmd, target, 6u) == 0 && cmd[6] == 0u && cmd[7] == 0u);
+    /* 41-byte air image: raw RF payload lower bound at 4.8 kbps is 68.3 ms;
+     * UART feed at 9600 baud is 42.7 ms. Modem overhead must also fit 100 ms;
+     * the live 10 Hz gate remains explicitly hardware-unverified until soak. */
+    CHECK((LORA_AIR_LEN * 8u * 1000u) / LORA_AIR_RATE_BPS == 68u);
+    CHECK((LORA_AIR_LEN * 10u * 1000u) / LORA_LINK_BAUD == 42u);
+    CHECK((LORA_AIR_LEN * 8u * 1000u) / 2400u > LORA_SEND_INTERVAL_MS);
   }
 
   /* ================= kesif-onarim karar cekirdegi (OLAY regresyonu) ======
@@ -1079,7 +1037,7 @@ int main(void)
     /* OLAY senaryosu 1 (yanki-kaybi): HI yazisi tutmus, modul 57600/HI'da.
      * ADIM 1 geri-okumasi HI gorur -> link 57600 (onarimsiz FIXED). */
     CHECK(lora_cfg_found_link_baud(hi, 57600u) == 57600u);
-    CHECK(lora_cfg_found_link_baud(hi, 57600u) == LORA_LINK_BAUD);
+    CHECK(lora_cfg_found_link_baud(hi, 57600u) == 57600u);
     /* Kanonik geri-donus: LO imaj 9600'de -> 9600. */
     CHECK(lora_cfg_found_link_baud(lo, 9600u) == 9600u);
     CHECK(lora_cfg_found_link_baud(lo, 9600u) == LORA_LINK_BAUD_FALLBACK);
@@ -1089,7 +1047,7 @@ int main(void)
     CHECK(lora_cfg_found_link_baud(fabrika, 1200u) == 1200u);
     CHECK(lora_cfg_found_link_baud(NULL, 38400u) == 38400u);
     /* Kanit yoksa imaj konusmasi gecerlidir. */
-    CHECK(lora_cfg_found_link_baud(hi, 0u) == 57600u);
+    CHECK(lora_cfg_found_link_baud(hi, 0u) == 9600u);
     CHECK(lora_cfg_found_link_baud(lo, 0u) == 9600u);
     /* Cope suruklenen baud + bozuk imaj -> guvenli geri-donus. */
     CHECK(lora_cfg_found_link_baud(bozuk, 12345u) == 9600u);
@@ -1101,13 +1059,13 @@ int main(void)
     CHECK(lora_cfg_found_link_baud(lo, 115200u) == 115200u);
   }
 
-  /* Kor urtak donus: diyalog kanitliyken 8 baytlik 65-imaji kurulur
-   * (UART 9600 + 19,2k hava + anahtar 0), kanitsizken tampona dokunulmaz. */
+  /* Common target image: when configuration dialogue is proven, construct
+   * the 8-byte 0x63 image (9600 UART + 4.8 kbps RF + zero encryption key). */
   {
     uint8_t govde[8u] = {0xAAu, 0xAAu, 0xAAu, 0xAAu,
                          0xAAu, 0xAAu, 0xAAu, 0xAAu};
     CHECK(lora_cfg_common_img(govde, true));
-    CHECK(govde[0] == 0x00u && govde[1] == 0x00u && govde[2] == 0x65u);
+    CHECK(govde[0] == 0x00u && govde[1] == 0x00u && govde[2] == 0x63u);
     CHECK(govde[3] == 0x00u && govde[4] == 0x17u && govde[5] == 0x00u);
     CHECK(govde[6] == 0x00u && govde[7] == 0x00u);
     CHECK(memcmp(govde, LORA_CFG_COMMON, 6) == 0);
@@ -1145,7 +1103,7 @@ int main(void)
   /* ================= kosullu C0-kalicilik karari (flash omru) ============
    * Kanitli sorun: C2-RAM guc cevriminde ucar, modul bilinmeyen FLASH imajina
    * doner; C0-kalicilik hic denenmiyordu. Kural: SADECE ilk tarama okumasi
-   * 65-imajindan FARKLIYSA ve C2-RAM yaz+dog rula BASARILI olduktan SONRA ayni
+   * 63-imajindan FARKLIYSA ve C2-RAM yaz+dog rula BASARILI olduktan SONRA ayni
    * imaj bir kez C0 ile yazilip tekrar okunur (uzun settle: AUX 1500 ms +
    * 500 ms). Basarisizlik sessizce C2-RAM'e duser (link yolu ayni). Eslesen
    * imaja C0 YAZILMAZ (flash omru). 57600/C5 dali YOKTUR, huart hep 9600. */
@@ -1157,8 +1115,8 @@ int main(void)
     memcpy(lo, LORA_CFG_EXPECTED, LORA_CFG_LEN);
     memcpy(hi, LORA_CFG_EXPECTED_HI, LORA_CFG_LEN);
     memcpy(bozuk, hi, LORA_CFG_LEN);
-    bozuk[2] ^= 0x01u; /* tek bit: ne HI ne 65-imaji */
-    /* Adaylik: eslesen 65-imajina C0 YOK (flash omru). */
+    bozuk[2] ^= 0x01u; /* tek bit: ne HI ne 63-imaji */
+    /* Adaylik: eslesen 63-imajina C0 YOK (flash omru). */
     CHECK(!lora_cfg_needs_persist(lo));
     /* Irasamis her imaj adaydir: HI/bozuk/fabrika (2,4k) hepsi farklidir. */
     CHECK(lora_cfg_needs_persist(hi));

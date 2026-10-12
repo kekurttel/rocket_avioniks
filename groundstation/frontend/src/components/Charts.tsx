@@ -149,15 +149,15 @@ export function Charts({ history }: ChartsProps): ReactNode {
   return (
     <div className="bz-charts">
       <Chart
-        title="İrtifa — zaman"
+        title="Göreli irtifa — zaman"
         unit="metre"
         yUnit="m"
         data={rows}
         dataKey="alt_m"
-        name="İrtifa"
+        name="Göreli irtifa"
         stroke={palette.info}
         hasData={hasAlt}
-        emptyNote="İrtifa verisi yok — telemetri paketleri bekleniyor"
+        emptyNote="Göreli irtifa verisi yok — telemetri paketleri bekleniyor"
         format={(v) => `${Number(v).toFixed(1)} m`}
         domain={altDomain}
       />

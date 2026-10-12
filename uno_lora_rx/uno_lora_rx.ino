@@ -21,10 +21,11 @@
  * MOD SEMANTIGI (datasheet §6, M1,M0):
  *   (0,0) Mode 0 = seffaf iletim (CALISMA modu)
  *   (1,1) Mode 3 = derin uyku = KONFIGÜRASYON modu (sadece 9600 8N1)
- * Boot sirasi: Mode 3 -> C1 00 06 ile 00H..05H oku ->
- *   beklenen {00,00,65,00,17,00} (19,2kbps hava, STM32 ile ayni) degilse C0 ile yaz -> Mode 0'a don.
- * Fabrika ayarlari zaten bu degerler oldugu icin saglam modul
- * yeniden yazilmaz.
+ * Boot sirasi: Mode 3 -> C1 00 06 ile kayitlari oku -> hedef imaj
+ * {00,00,63,00,17,00} (9600 UART, 4.8 kbps RF) degilse E220 veri sayfasi
+ * biciminde C2 RAM-yazimi dene, Mode 0'a cikip yeniden oku, sonra tek seferlik
+ * C0 kalici yaz ve tekrar dogrula. 22 dBm zaten azami guc; guc bitlerini
+ * artirmaya calisma.
  *
  * NEDEN D2, D0 DEĞİL:
  *   ATmega328P bootloader'ı D0/D1'i STK500 sync için kullanır. Modülün TX'i
@@ -35,14 +36,21 @@
  *
  * Serial Monitor 115200.
  *
- * Cerceve (30 bayt, little-endian) — Src/lora.c ile birebir ayni:
- *   0  A5  magic        1  01  ver        2  seq u16      4  t_ms u32
- *   8  flight u16     10  ek7mode u16   12  alt_cm i16   14  vel_cms i16
- *  16  sats u16       18  lat_e5 i32    22  lon_e5 i32   26  batt_mv u16
- *  28  flags u8       29  crc u8
+ * Current frame V3: 38 bytes, little-endian. Legacy V1 (30 B) and V2 (36 B)
+ * remain accepted. V3 altitude is signed decimetres (int32) to retain 0.1 m:
+ *   0 A5, 1 version 03, 2 seq u16, 4 t_ms u32, 8 flight, 10 ek7 mode,
+ *   12 alt_dm i32, 16 vel_cms i16, 18 sats u16, 20 lat_e5 i32, 24 lon_e5 i32,
+ *   28 batt_mv u16, 30 flags, 31 tilt_ddeg u16, 33/35 lean i16, 37 CRC.
  */
 
+/* 32-byte receive ring is sufficient for a 4.8 kbps E220 stream: the loop
+ * consumes bytes continuously, and its ~10 ms status line can accumulate only
+ * about ten incoming UART bytes. Keep SRAM headroom for the V3 parser. */
+#ifndef _SS_MAX_RX_BUFF
+#define _SS_MAX_RX_BUFF 32
+#endif
 #include <SoftwareSerial.h>
+#include <stdint.h>
 
 /* LoRa modulunden gelen veri: D2 = RX. D0/D1 ekran cikisi olarak
  * 115200'de kalir; modul D0'a hicbaglanmaz, boylece bootloader
@@ -54,23 +62,25 @@ static const uint8_t PIN_M0  = 5;
 static const uint8_t PIN_M1  = 6;
 static const uint8_t PIN_AUX = 7;
 
-/* Beklenen 00H..05H imaji: ADDH/ADDL=0000, REG0=65 (9600 8N1, 19,2k hava),
- * REG1=00 (200B, 22dBm), REG2=17 (CH23 = 873.125 MHz), REG3=00
- * (seffaf, RSSI yok, LBT yok). STM32 tarafiyla ayni HAVA'da olmali
- * (19,2k); UART bitleri host'a gore ayrilir (Uno 011=9600). */
-static const uint8_t CFG_EXPECT[6] = {0x00,0x00,0x65,0x00,0x17,0x00};
+/* Both E220 modules use 9600 8N1 UART and 4.8 kbps RF. REG1=00 is the
+ * hardware maximum 22 dBm, REG2=17 is 873.125 MHz, REG3=00 transparent.
+ * The RF rate must match at both ends. */
+static const uint8_t CFG_EXPECT[6] = {0x00,0x00,0x63,0x00,0x17,0x00};
 
 static const uint8_t  FRAME_LEN_V1 = 30;
 static const uint8_t  FRAME_LEN_V2 = 36;
+static const uint8_t  FRAME_LEN_V3 = 38;
 static const uint8_t  MAGIC     = 0xA5;
 static const uint8_t  VERSION_V1 = 0x01;
 static const uint8_t  VERSION_V2 = 0x02;
+static const uint8_t  VERSION_V3 = 0x03;
 static const int16_t  ALT_INVALID = (int16_t)0x8000;
+static const int32_t ALT_DM_INVALID = INT32_MIN;
 static const int16_t  VEL_INVALID = (int16_t)0x8000;
 static const uint16_t SATS_INVALID = 0xFFFF;
 static const uint16_t TILT_INVALID = 0xFFFF;
 
-static uint8_t  buf[FRAME_LEN_V2 + 1];
+static uint8_t  buf[FRAME_LEN_V3 + 1];
 static uint8_t  len = 0;
 static uint32_t good = 0, bad = 0;
 static uint32_t raw = 0;            /* HIC BIR SAYAC YOKSA: kablo/power sorunu */
@@ -79,9 +89,10 @@ static uint32_t n_a5 = 0;             /* gorulen A5 (magic) sayisi */
 static uint32_t n_00 = 0;             /* gorulen 0x00 sayisi */
 static uint32_t n_hi = 0;             /* gorulen >=0x80 sayisi */
 static uint32_t n_hdr = 0;            /* gorulen 00 02 17 siralamasi */
-static uint8_t  hdr_hist[8] = {0,0,0,0,0,0,0,0};
+static uint8_t  hdr_hist[3] = {0,0,0};
 static uint8_t  hdr_i = 0;
-static uint8_t  rawbuf[32];         /* gelen son baytlar (hex döküm) */
+static uint8_t  hdr_seen = 0;
+static uint8_t  rawbuf[16];         /* compact last-byte window for diagnostics */
 static uint8_t  rawn = 0, raww = 0;
 static uint32_t last_good_ms = 0;
 static bool     reported_ok = false;
@@ -100,6 +111,7 @@ static uint32_t rd32(const uint8_t *p)
 static int32_t rd_i32(const uint8_t *p) { return (int32_t)rd32(p); }
 
 static void put(const char *s) { Serial.write(s); }
+static void put(const __FlashStringHelper *s) { Serial.print(s); }
 
 static void put_u32(uint32_t v)
 {
@@ -108,6 +120,20 @@ static void put_u32(uint32_t v)
   while ((v > 0u) && (i < (uint8_t)sizeof b))
   { b[i++] = (char)('0' + (v % 10u)); v /= 10u; }
   while (i > 0u) { Serial.write(b[--i]); }
+}
+
+/* Print signed decimetres as a truthful metre value (e.g. -0.4m). INT32_MIN
+ * is reserved for invalid altitude. The widened negate avoids INT32_MIN UB. */
+static void put_alt_dm(int32_t dm)
+{
+  if (dm == ALT_DM_INVALID) { put(F("--")); return; }
+  int64_t signed_value = (int64_t)dm;
+  uint32_t mag = (uint32_t)((signed_value < 0) ? -signed_value : signed_value);
+  if (signed_value < 0) { put(F("-")); }
+  put_u32(mag / 10u);
+  put(F("."));
+  Serial.write((char)('0' + (mag % 10u)));
+  put(F("m"));
 }
 
 /* roket pozisyonunu basit decimal yaz (5e-5 derece birimi) */
@@ -119,7 +145,7 @@ static void put_coord(int32_t e5)
   put_u32(deg);
   put(deg < 10u ? "  " : " ");
   put_u32(min / 100u);
-  put(".");
+  put(F("."));
   uint32_t f = min % 100u;
   Serial.write((char)('0' + (f / 10u)));
   Serial.write((char)('0' + (f % 10u)));
@@ -137,7 +163,7 @@ static uint8_t crc8(const uint8_t *p, uint8_t n)
 static void put_ddeg(uint16_t dd)
 {
   put_u32(dd / 10u);
-  put(".");
+  put(F("."));
   Serial.write((char)('0' + (dd % 10u)));
 }
 
@@ -145,10 +171,10 @@ static void put_ddeg(uint16_t dd)
 static void put_lean(int16_t v)
 {
   uint16_t a;
-  if (v < 0) { put("-"); a = (uint16_t)(-v); }
+  if (v < 0) { put(F("-")); a = (uint16_t)(-v); }
   else { a = (uint16_t)v; }
   put_u32(a / 1000u);
-  put(".");
+  put(F("."));
   uint16_t f = a % 1000u;
   Serial.write((char)('0' + (f / 100u)));
   Serial.write((char)('0' + ((f / 10u) % 10u)));
@@ -157,29 +183,47 @@ static void put_lean(int16_t v)
 
 static bool handle_frame(uint8_t flen)
 {
+  uint8_t ver;
+  int32_t alt_dm;
+  int16_t vel;
+  uint16_t sats, batt;
+  int32_t lat, lon;
+  uint16_t flight, ek7mode;
+  uint8_t flags;
   if (buf[0] != MAGIC) { bad++; return false; }
-  if (buf[1] != VERSION_V1 && buf[1] != VERSION_V2) { bad++; return false; }
-  if (flen != FRAME_LEN_V1 && flen != FRAME_LEN_V2) { bad++; return false; }
-  /* Uzunluk/versiyon tutarliligi: v1=30, v2=36. */
-  if ((buf[1] == VERSION_V1 && flen != FRAME_LEN_V1) ||
-      (buf[1] == VERSION_V2 && flen != FRAME_LEN_V2)) { bad++; return false; }
-  /* CRC DOGRULAMASI: firmware crc = sum(bytes 0..28) mod 256 yaziyor ve
-   * bunu byte 29'a koyuyor. Dogru kontrol: sum(0..28) == buf[29].
-   *
-   * DIKKAT: "30 baytin toplami == 0" kontrolu YANLISTIR; o ancak
-   * sum = 0 veya 128 oldugunda gecer ve gecerli paketlerin ~%99'unu
-   * reddeder (toplam = S + S = 2S mod 256). */
+  ver = buf[1];
+  if (!((ver == VERSION_V1 && flen == FRAME_LEN_V1) ||
+        (ver == VERSION_V2 && flen == FRAME_LEN_V2) ||
+        (ver == VERSION_V3 && flen == FRAME_LEN_V3)))
+  {
+    bad++;
+    return false;
+  }
+  /* Additive CRC: CRC byte is final for all versions. */
   if (crc8(buf, (uint8_t)(flen - 1u)) != buf[flen - 1u]) { bad++; return false; }
-
-  uint16_t flight  = rd16(&buf[8]);
-  uint16_t ek7mode = rd16(&buf[10]);
-  int16_t  alt     = rd_i16(&buf[12]);
-  int16_t  vel     = rd_i16(&buf[14]);
-  uint16_t sats    = rd16(&buf[16]);
-  int32_t  lat     = rd_i32(&buf[18]);
-  int32_t  lon     = rd_i32(&buf[22]);
-  uint16_t batt    = rd16(&buf[26]);
-  uint8_t  flags   = buf[28];
+  flight = rd16(&buf[8]);
+  ek7mode = rd16(&buf[10]);
+  if (ver == VERSION_V3)
+  {
+    alt_dm = rd_i32(&buf[12]);
+    vel = rd_i16(&buf[16]);
+    sats = rd16(&buf[18]);
+    lat = rd_i32(&buf[20]);
+    lon = rd_i32(&buf[24]);
+    batt = rd16(&buf[28]);
+    flags = buf[30];
+  }
+  else
+  {
+    int16_t legacy_alt = rd_i16(&buf[12]);
+    alt_dm = (legacy_alt == ALT_INVALID) ? ALT_DM_INVALID : (int32_t)legacy_alt * 10;
+    vel = rd_i16(&buf[14]);
+    sats = rd16(&buf[16]);
+    lat = rd_i32(&buf[18]);
+    lon = rd_i32(&buf[22]);
+    batt = rd16(&buf[26]);
+    flags = buf[28];
+  }
 
   good++;
   last_good_ms = millis();
@@ -192,61 +236,63 @@ static bool handle_frame(uint8_t flen)
    * (pos=(.+)) oldugu icin tilt/lean'i yutmamalidir. Eksik jetonlari aynen
    * korundu: alt/vel/sats "--", batt "--" (mV'siz), pos "--",
    * v1'de "tilt=-- lean=--". Debug satirlari (MODE-PROBE, CFG) aynen. */
-  put("[LINK] seq=");
+  put(F("[LINK] seq="));
   put_u32(rd16(&buf[2]));
-  put(" t=");
+  put(F(" t="));
   put_u32(rd32(&buf[4]));
-  put("ms flight=");
+  put(F("ms flight="));
   put_u32(flight);
-  put(" ek7mode=");
+  put(F(" ek7mode="));
   put_u32(ek7mode);
 
-  put(" alt=");
-  if (alt != ALT_INVALID) { put_u32((uint32_t)alt); put("m"); }
-  else { put("--"); }
+  put(F(" alt="));
+  put_alt_dm(alt_dm);
 
-  put(" vel=");
+  put(F(" vel="));
   if (vel != VEL_INVALID)
   {
-    if (vel < 0) { put("-"); put_u32((uint32_t)(-vel)); }
+    if (vel < 0) { put(F("-")); put_u32((uint32_t)(-vel)); }
     else { put_u32((uint32_t)vel); }
-    put("cm/s");
+    put(F("cm/s"));
   }
-  else { put("--"); }
+  else { put(F("--")); }
 
-  put(" sats=");
-  if (sats == SATS_INVALID) { put("--"); } else { put_u32(sats); }
+  put(F(" sats="));
+  if (sats == SATS_INVALID) { put(F("--")); } else { put_u32(sats); }
 
-  put(" batt=");
-  if (batt == 0u) { put("--"); } else { put_u32(batt); put("mV"); }
+  put(F(" batt="));
+  if (batt == 0u) { put(F("--")); } else { put_u32(batt); put(F("mV")); }
 
-  put(" fix=");
-  put((flags & 0x01u) ? "Y" : "N");
-  put(" LED=");
+  put(F(" fix="));
+  put((flags & 0x01u) ? F("Y") : F("N"));
+  put(F(" LED="));
   Serial.write((char)((flags & 0x02u) ? 'B' : '-'));
   Serial.write((char)((flags & 0x04u) ? 'Y' : '-'));
   Serial.write((char)((flags & 0x08u) ? 'R' : '-'));
 
-  /* Egiklik: v2'de var (off29 tilt_ddeg, off31/33 lean). v1'de ikisi de "--". */
-  put(" tilt=");
-  if (flen == FRAME_LEN_V2)
+  /* V2: tilt 29 and lean 31/33. V3: tilt 31 and lean 33/35. */
+  put(F(" tilt="));
+  if (ver == VERSION_V2 || ver == VERSION_V3)
   {
-    uint16_t td = rd16(&buf[29]);
-    int16_t lx = rd_i16(&buf[31]);
-    int16_t ly = rd_i16(&buf[33]);
-    if (td == TILT_INVALID) { put("-- lean=--"); }
-    else { put_ddeg(td); put(" lean="); put_lean(lx); put(","); put_lean(ly); }
+    uint8_t tilt_off = (ver == VERSION_V3) ? 31u : 29u;
+    uint8_t lean_x_off = (ver == VERSION_V3) ? 33u : 31u;
+    uint8_t lean_y_off = (ver == VERSION_V3) ? 35u : 33u;
+    uint16_t td = rd16(&buf[tilt_off]);
+    int16_t lx = rd_i16(&buf[lean_x_off]);
+    int16_t ly = rd_i16(&buf[lean_y_off]);
+    if (td == TILT_INVALID) { put(F("-- lean=--")); }
+    else { put_ddeg(td); put(F(" lean=")); put_lean(lx); put(F(",")); put_lean(ly); }
   }
-  else { put("-- lean=--"); }
+  else { put(F("-- lean=--")); }
 
   /* Konum: fix + sifir-disi birlikte aranir (GPS ozetiyle ayni kural).
    * Sonda olmasi sart (yukaridaki nota bak). */
   bool pos_ok = ((lat != 0) || (lon != 0)) && (flags & 0x01u);
-  put(" pos=");
-  if (!pos_ok) { put("--"); }
-  else { put_coord(lat); put("  "); put_coord(lon); }
+  put(F(" pos="));
+  if (!pos_ok) { put(F("--")); }
+  else { put_coord(lat); put(F("  ")); put_coord(lon); }
 
-  put("\n");
+  put(F("\n"));
   reported_ok = true;
   return true;
 }
@@ -258,15 +304,15 @@ void setup()
   pinMode(PIN_M1, OUTPUT);
   pinMode(PIN_AUX, INPUT);
   delay(150);
-  put("\n=== E220 LoRa ALICI ===\n");
-  put("TXD->D2 RXD->D3 M0->D5 M1->D6 AUX->D7 VCC->5V\n");
+  put(F("\n=== E220 LoRa ALICI ===\n"));
+  put(F("TXD->D2 RXD->D3 M0->D5 M1->D6 AUX->D7 VCC->5V\n"));
 
   /* D2'nin bos seviyesi (SoftwareSerial henuz baslamadi, hat bize ait):
    * 1 = bos/yuksek (normal), 0 = asagi cekili (kisa devre, yanlis delik). */
   pinMode(2, INPUT_PULLUP);
   delay(20);
   uint8_t idle = digitalRead(2);
-  put("D2 bos seviye = ");
+  put(F("D2 bos seviye = "));
   Serial.write(idle ? '1' : '0');
   put(idle ? "   (normal, hat bos)\n" : "   (LOW -> kisa devre, yanlis delik)\n");
 
@@ -277,8 +323,8 @@ void setup()
 
   lora_cfg_boot();   /* Mode 3: oku, gerekirse yaz, Mode 0'a don */
 
-  put("30 bayt v1 (A5 01 ...) veya 36 bayt v2 (A5 02 ... tilt lean crc)\n");
-  put("gecerli cerceve bekleniyor...\n\n");
+  put(F("V1=30B, V2=36B legacy; V3=38B (signed 0.1m altitude) current\n"));
+  put(F("gecerli cerceve bekleniyor...\n\n"));
 }
 
 /* AUX yuksek bekle (dusuk = mesgul). Donus: hazir mi. */
@@ -324,7 +370,7 @@ static bool cfg_read(uint8_t *p6)
 static uint8_t echo_buf[11];
 static uint8_t echo_n = 0;
 
-static const uint8_t CFG_FULL8[8] = {0x00,0x00,0x65,0x00,0x17,0x00,0x00,0x00};
+static const uint8_t CFG_FULL8[8] = {0x00,0x00,0x63,0x00,0x17,0x00,0x00,0x00};
 
 static bool cfg_write_full(void)
 {
@@ -336,7 +382,7 @@ static bool cfg_write_full(void)
   while (RX2.available()) { RX2.read(); }
   RX2.write(cmd, 11);
   unsigned long t0 = millis();
-  while (n < 11u && (millis() - t0) < 800UL)
+  while (n < 11u && (millis() - t0) < 2500UL)
   {
     while (RX2.available() && n < 11u) { rsp[n++] = RX2.read(); }
   }
@@ -351,10 +397,10 @@ static bool cfg_write_full(void)
   return true;
 }
 
-/* C2 00 08 RAM yazisi (gecici, flash'a yazmaz, omur yemez):
- * Her boot denenir, zararsizdir. Echo C1 00 08 beklenir.
- * Bu modulde echo verip tutmayabilir; dogrulama okumasi karar verir.
- * Zaman asimlari C0 ile ayni (800ms echo), yeni deger yok. */
+/* E220 manual §7.1: C2 temporary-write frame is C2 + address + length +
+ * data (e.g. "C2 00 03 12 34 62"); response carries C1 + address + length
+ * + 8 bytes (11 bytes). A C2 frame without the length byte is answered
+ * FF FF FF and applies nothing. */
 static bool cfg_write_ram(void)
 {
   uint8_t cmd[11] = {0xC2, 0x00, 0x08, 0,0,0,0,0,0,0,0};
@@ -395,18 +441,18 @@ static void lora_cfg_boot(void)
   mode_set(1, 1);   /* Mode 3 = konfigurasyon */
   if (!aux_wait(500UL))
   {
-    put("LORA CFG: FAILED (AUX yok)\n");
+    put(F("LORA CFG: FAILED (AUX yok)\n"));
     mode_set(0, 0);
     return;
   }
   if (!cfg_read(cur))
   {
-    put("LORA CFG: FAILED (cevap yok)\n");
+    put(F("LORA CFG: FAILED (cevap yok)\n"));
     mode_set(0, 0);
     (void)aux_wait(300UL);
     return;
   }
-  put("LORA CFG read: ");
+  put(F("LORA CFG read: "));
   for (uint8_t i = 0u; i < 6u; i++)
   {
     char pr[3];
@@ -415,7 +461,7 @@ static void lora_cfg_boot(void)
     pr[2] = '\0';
     Serial.write(pr); Serial.write(' ');
   }
-  put("\n");
+  put(F("\n"));
   match = true;
   for (uint8_t i = 0u; i < 6u; i++)
   {
@@ -425,11 +471,17 @@ static void lora_cfg_boot(void)
   /* Her-boot C2 RAM denemesi (flash'a yazmaz, zararsiz): log durust tutulur.
    * C0 karari SADECE 6-bayt eslesmezlige bakar; ilk okuma eslestiyse
    * C2 durumu ne olursa olsun C0 YAZILMAZ (flash omru korunur). */
-  put("LORA CFG: C2 RAM deneniyor (C2 00 08)...\n");
+  put(F("LORA CFG: C2 RAM deneniyor (C2 00 08)...\n"));
   bool c2ok = cfg_write_ram();
-  (void)aux_wait(300UL);
+  /* E220 applies RAM writes on EXIT from Mode 3. Reading immediately in the
+   * same configuration session can return the old image; switch to Mode 0,
+   * wait for AUX-ready, then re-enter Mode 3 before verification. */
+  mode_set(0, 0);
+  (void)aux_wait(500UL);
+  mode_set(1, 1);
+  bool ready1 = aux_wait(500UL);
   bool match1 = false;
-  if (cfg_read(cur) || cfg_read(cur))
+  if (ready1 && (cfg_read(cur) || cfg_read(cur)))
   {
     match1 = true;
     for (uint8_t i = 0u; i < 6u; i++)
@@ -445,26 +497,54 @@ static void lora_cfg_boot(void)
   bool yazim = false;
   if (match0 && match1)
   {
-    put("LORA CFG: OK eslesti (yazilmadi, C0 yok)\n");
+    put(F("LORA CFG: OK eslesti (yazilmadi, C0 yok)\n"));
   }
   else if (match0 && !match1)
   {
     (void)c2ok;
-    put("LORA CFG: OK eslesti (ilk imaj eslesti, C2 tutmadi, C0 yazilmadi)\n");
+    put(F("LORA CFG: OK eslesti (ilk imaj eslesti, C2 tutmadi, C0 yazilmadi)\n"));
     match = true; /* kayitli imaj dogruydu, C0 yok */
   }
   else if (!match0 && match1)
   {
-    (void)c2ok;
-    put("LORA CFG: C2 yazildi (RAM tuttu, C0 yazilmadi)\n");
-    match = true;
+    /* A different saved image was observed at boot. C2 + read-back confirms
+     * the new 4.8 kbps image is running; commit it once with C0 so a power
+     * cycle does not revert the RF rate. Next boot will match and skip flash. */
+    put(F("LORA CFG: C2 dogrulandi; C0 kalici yazim deneniyor\n"));
+    bool c0ok = cfg_write_full();
+    if (c0ok)
+    {
+      (void)aux_wait(2500UL);
+      mode_set(0, 0);
+      (void)aux_wait(1500UL);
+      mode_set(1, 1);
+      if (aux_wait(500UL) && cfg_read(cur))
+      {
+        bool persisted_match = true;
+        for (uint8_t i = 0u; i < 6u; i++)
+        {
+          if (cur[i] != CFG_EXPECT[i]) { persisted_match = false; break; }
+        }
+        put(persisted_match ? "LORA CFG: C0 kalici+DOGRULANDI\n"
+                            : "LORA CFG: C0 geri-okuma farkli; RAM imaji kullaniliyor\n");
+      }
+      else
+      {
+        put(F("LORA CFG: C0 yazildi, geri-okuma yok; RAM imaji kullaniliyor\n"));
+      }
+    }
+    else
+    {
+      put(F("LORA CFG: C0 kalicilik dogrulanamadi; RAM imaji kullaniliyor\n"));
+    }
+    match = true; /* C2 image was verified; C0 failure must not discard it */
   }
   else
   {
   /* !match0 && !match1: YALNIZ bu dalda C0 yazilir. Uzun settle'lar
    * sadece gercekten yazarken calisir (Mode0 uygula + Mode3 dogrula). */
   yazim = true;
-  put("LORA CFG: tam imaj yaziliyor (C0 00 08)...\n");
+  put(F("LORA CFG: tam imaj yaziliyor (C0 00 08)...\n"));
   /* §6.5: calisan konfigurasyon Mode 3 CIKISINDA uygulanir; ayni
    * oturumda tekrar okumak eski degerleri gosterir. Siralan: yaz ->
    * Mode 0 (uygula) -> Mode 3 (dogrula). */
@@ -493,9 +573,9 @@ static void lora_cfg_boot(void)
   (void)aux_wait(300UL);
   if (!match)
   {
-    put("  echo (");
+    put(F("  echo ("));
     put_u32(echo_n);
-    put(" bayt): ");
+    put(F(" bayt): "));
     for (uint8_t i = 0u; i < echo_n && i < 11u; i++)
     {
       char pr[3];
@@ -504,7 +584,7 @@ static void lora_cfg_boot(void)
       pr[2] = '\0';
       Serial.write(pr); Serial.write(' ');
     }
-    put(echo_n == 0u ? " (hic cevap yok)\n" : "\n");
+    put(echo_n == 0u ? F(" (hic cevap yok)\n") : F("\n"));
   }
   if (yazim)
   {
@@ -522,7 +602,7 @@ void loop()
     got = true;
     raw++;
     rawbuf[raww] = c;
-    raww = (uint8_t)((raww + 1u) & 31u);   /* 32 baytlik pencere */
+    raww = (uint8_t)((raww + 1u) & 15u);   /* 16-byte SRAM-saving window */
 
     /* magic'i yakala: hizali degilsek de yeniden senkronlaniriz */
     if (len == 0u)
@@ -532,23 +612,26 @@ void loop()
       else if (c >= 0x80u) { n_hi++; }
       /* fixed-header izi: 00 02 17 siralamasi */
       hdr_hist[hdr_i] = c;
-      hdr_i = (uint8_t)((hdr_i + 1u) & 7u);
+      hdr_i++;
+      if (hdr_i >= 3u) { hdr_i = 0u; }
+      if (hdr_seen < 3u) { hdr_seen++; }
+      if (hdr_seen >= 3u)
       {
-        uint8_t a = hdr_hist[(uint8_t)((hdr_i + 8u - 3u) & 7u)];
-        uint8_t b = hdr_hist[(uint8_t)((hdr_i + 8u - 2u) & 7u)];
-        uint8_t c2 = hdr_hist[(uint8_t)((hdr_i + 8u - 1u) & 7u)];
+        uint8_t a = hdr_hist[hdr_i];
+        uint8_t b = hdr_hist[(uint8_t)((hdr_i + 1u) % 3u)];
+        uint8_t c2 = hdr_hist[(uint8_t)((hdr_i + 2u) % 3u)];
         if (a == 0x00u && b == 0x02u && c2 == 0x17u) { n_hdr++; }
       }
       continue;
     }
     buf[len++] = c;
-    /* Versiyon 2. baytta belli olur: v1=30, v2=36 bayt beklenir.
-     * Bilinmeyen versiyonda senkronu at, magic ise yeniden baslat. */
+    /* Byte 1 selects a version-specific frame length: V1=30, V2=36, V3=38. */
     uint8_t want = 0;
     if (len >= 2u)
     {
       if (buf[1] == VERSION_V1) { want = FRAME_LEN_V1; }
       else if (buf[1] == VERSION_V2) { want = FRAME_LEN_V2; }
+      else if (buf[1] == VERSION_V3) { want = FRAME_LEN_V3; }
       else
       {
         bad++;
@@ -559,7 +642,7 @@ void loop()
     }
     else
     {
-      want = FRAME_LEN_V2; /* henuz belli degil: tasma ustu */
+      want = FRAME_LEN_V3; /* version is in byte 1; buffer accommodates V3 */
     }
     if (len >= want && want != 0u)
     {
@@ -572,39 +655,39 @@ void loop()
   if (millis() - last_good_ms > 3000UL)
   {
     last_good_ms = millis();
-    put("[bekleniyor] good=");
+    put(F("[bekleniyor] good="));
     put_u32(good);
-    put("  bozuk=");
+    put(F("  bozuk="));
     put_u32(bad);
-    put("  RAW=");
+    put(F("  RAW="));
     put_u32(raw);
-    put(" (");
+    put(F(" ("));
     put_u32((raw - raw_mark + 2u) / 3u);
-    put(" B/s)  A5=");
+    put(F(" B/s)  A5="));
     put_u32(n_a5);
-    put(" 00=");
+    put(F(" 00="));
     put_u32(n_00);
-    put(" HI=");
+    put(F(" HI="));
     put_u32(n_hi);
-    put(" HDR=");
+    put(F(" HDR="));
     put_u32(n_hdr);
-    put("\n");
+    put(F("\n"));
     raw_mark = raw;
     if (raw == 0u)
     {
-      put("   <-- RAW=0 ise HIC BIR BAYT GELMIYOR\n");
+      put(F("   <-- RAW=0 ise HIC BIR BAYT GELMIYOR\n"));
     }
 
     if (raw == 0u)
     {
-      put("  -> Modul TXD'si D2'ye bagli mi? VCC 5V'de mi? M0->D5 M1->D6 AUX->D7 mi?\n");
+      put(F("  -> Modul TXD'si D2'ye bagli mi? VCC 5V'de mi? M0->D5 M1->D6 AUX->D7 mi?\n"));
     }
     else
     {
-      put("  -> bayt geliyor ama cerceve degil. Son 32 bayt:\n   ");
-      for (uint8_t k = 0; k < 32u; k++)
+      put(F("  -> bayt geliyor ama cerceve degil. Son 16 bayt:\n   "));
+      for (uint8_t k = 0; k < 16u; k++)
       {
-        uint8_t idx = (uint8_t)((raww + k) & 31u);
+        uint8_t idx = (uint8_t)((raww + k) & 15u);
         uint8_t v = rawbuf[idx];
         char pair[3];
         pair[0] = "0123456789ABCDEF"[v >> 4];
@@ -613,8 +696,8 @@ void loop()
         Serial.write(pair);
         Serial.write(' ');
       }
-      put("\n  A5 görünüyorsa magic dogru, CRC bozuk -> seviye sorunu.\n");
-      put("  A5 yoksa modul farkli modda (M0/M1) ya da yanlis baud.\n");
+      put(F("\n  A5 görünüyorsa magic dogru, CRC bozuk -> seviye sorunu.\n"));
+      put(F("  A5 yoksa modul farkli modda (M0/M1) ya da yanlis baud.\n"));
     }
   }
   /* MODE-PROBE (sadece baglanti yokken, 10 sn'de bir): Mode 3'te olsaydi
@@ -640,12 +723,12 @@ void loop()
       }
       if (n == 9u && got[0] == 0xC1u && got[1] == 0x00u && got[2] == 0x06u)
       {
-        put("  MODE-PROBE: Mode3 ECHO (modul Mode 3'te takili! M0/M1 supheli)\n");
+        put(F("  MODE-PROBE: Mode3 ECHO (modul Mode 3'te takili! M0/M1 supheli)\n"));
         mode_set(0, 0);
       }
       else
       {
-        put("  MODE-PROBE: sessiz (Mode 3 disi, RF yolu supheli)\n");
+        put(F("  MODE-PROBE: sessiz (Mode 3 disi, RF yolu supheli)\n"));
       }
     }
   }

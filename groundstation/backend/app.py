@@ -27,14 +27,11 @@ SESSIONS = Path(__file__).resolve().parent / "sessions"
 SESSIONS.mkdir(exist_ok=True)
 
 SCHEMA_VERSION = 1
-STALE_MS = 1500
-# Uyarlanabilir bayat eşiği (ms): esik = max(STALE_MS, 3 x olculen periyot).
-# Olculen periyot = 1000 / rate_hz (rate_hz > 0 iken); hiz sifirsa ya da henuz
-# olculmediyse taban STALE_MS kullanilir. Marjinal RF baglantida nominal hiz
-# duserse sabit 1500 ms erken "bayat" der; 3x periyot kuraliyla eksi gercek
-# hiza uyar, hiz sifirlaninca 1500 ms tabana doner (donmus/canlı ayrımı için
-# tek kural: simdi - rx_time > esik ise bayat; rx_time yoksa bayat).
-STALE_MIN_MS = 1500
+STALE_MS = 500
+# 10 Hz telemetri için uyarlanabilir bayat eşiği: max(500 ms, 3 ölçülen
+# periyot). 10 Hz'de 500 ms taban, yaklaşık beş arka arkaya kayıp paketten
+# sonra bağlantıyı stale işaretler; link yokken de 500 ms'de bayatlar.
+STALE_MIN_MS = 500
 STALE_PERIOD_MULT = 3.0
 
 # USB-seri VID:PID listesi (Uno'ya benzeyenler aday sayılır):
@@ -168,10 +165,10 @@ _last_stale_mark = 0.0
 
 
 def stale_threshold_ms(rate_hz=None):
-    """Uyarlanabilir bayat esigi: max(1500ms, 3 x olculen periyot).
+    """Uyarlanabilir bayat esigi: max(500ms, 3 x olculen periyot).
 
-    rate_hz <= 0 ya da olculmemisse taban 1500 ms doner; aksi halde
-    periyot = 1000/rate_hz, esik = max(1500, 3*periyot). Donmus veri ile
+    rate_hz <= 0 ya da olculmemisse taban 500 ms doner; aksi halde
+    periyot = 1000/rate_hz, esik = max(500, 3*periyot). Donmus veri ile
     canli veri ayrimi tek kurala baglidir: simdi - rx_time > esik => bayat.
     """
     r = state.get("rate_hz") if rate_hz is None else rate_hz
@@ -207,12 +204,28 @@ def _record_stale_mark(now, reason):
         pass
 
 
+def _measured_rate_hz(timestamps):
+    """Calculate observed packet rate from elapsed intervals, not window size.
+
+    Dividing every partial 10-second window by 10 systematically reports a
+    newly connected 10 Hz stream as 1 Hz after its first second. The sample
+    interval estimator is correct immediately after two samples, bounded to
+    a 10-second window by the caller, and reports 0 until a period is observed.
+    """
+    if len(timestamps) < 2:
+        return 0.0
+    elapsed = timestamps[-1] - timestamps[0]
+    if elapsed <= 0.0 or not math.isfinite(elapsed):
+        return 0.0
+    return round((len(timestamps) - 1) / elapsed, 2)
+
+
 def _refresh_link_age():
     now = time.time()
     alive = [t for t in _rate_times if now - t < 10.0]
     if len(alive) != len(_rate_times):
         _rate_times[:] = alive
-    state["rate_hz"] = round(len(alive) / 10.0, 2)
+    state["rate_hz"] = _measured_rate_hz(alive)
     state["stale_ms"] = int(round(stale_threshold_ms(state["rate_hz"])))
     # Bagli port sistemden duserse (reboot/tak-cikar sonrasi kayma ya da
     # kablo cekme): port_kayip=true + connected=false. Port adi korunur,
@@ -406,7 +419,7 @@ def apply_link(lines):
         state["range_rej"] = int(state.get("range_rej") or 0) + rej
         _rate_times.append(now)
         _rate_times = [t for t in _rate_times if now - t < 10.0]
-        state["rate_hz"] = round(len(_rate_times) / 10.0, 2)
+        state["rate_hz"] = _measured_rate_hz(_rate_times)
         state["stale_ms"] = int(round(stale_threshold_ms(state["rate_hz"])))
     if recording["active"] and recording["fh"]:
         with state_lock:

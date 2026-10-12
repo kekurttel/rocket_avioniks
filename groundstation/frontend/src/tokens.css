@@ -1,0 +1,116 @@
+/* =============================================================================
+   BOZOK GÖREV KONTROL — tasarım belirteçleri (tek kaynak)
+   -----------------------------------------------------------------------------
+   Renk rolleri:
+     mavi / beyaz  → bilgi ve normal durum
+     kehribar      → uyarı (bayat veri, fix yok, bekleyen işlem)
+     kırmızı       → tehlike (yalnızca gerçek arıza / bağlantı kopması)
+   Bu dosyanın dışında renk, boyut, radius, boşluk veya süre SABİTLENMEMELİ.
+   Hareket dili: kritik sönümlü yaylar (aşım yok), basış anında geri bildirim,
+   her geçiş kesintilebilir; prefers-reduced-motion altında opaklık kalır.
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Ham palet: grafit zemin + lacivert yapı ---- */
+  --bz-graphite-1000: #04060c;
+  --bz-graphite-950: #070b14;
+  --bz-graphite-900: #0a0f1b;
+  --bz-navy-900: #0b1220;
+  --bz-navy-850: #0e1626;
+  --bz-navy-800: #121c30;
+  --bz-navy-750: #16233a;
+
+  --bz-blue-800: #16438f;
+  --bz-blue-600: #2f7bff;
+  --bz-blue-400: #5b96ff;
+  --bz-blue-200: #a9c8ff;
+
+  --bz-white: #ffffff;
+  --bz-text: #e8eefb;
+  --bz-text-dim: #a2b3ce;
+  --bz-text-mute: #6f81a0;
+
+  --bz-amber-500: #ffb020;
+  --bz-amber-200: #ffd899;
+  --bz-red-500: #ff4d63;
+  --bz-red-200: #ffa3b0;
+
+  /* ---- Malzeme: saydam katmanlar (hiyerarşiyi taşırlar) ---- */
+  --bz-scrim: rgba(4, 6, 12, 0.76);
+  --bz-bar-bg: rgba(7, 11, 20, 0.76);
+  --bz-card-bg: rgba(15, 23, 40, 0.62);
+  --bz-card-solid: #0e1626;
+  --bz-chip-bg: rgba(255, 255, 255, 0.05);
+  --bz-line: rgba(160, 190, 255, 0.1);
+  --bz-line-strong: rgba(160, 190, 255, 0.2);
+  --bz-hover: rgba(255, 255, 255, 0.045);
+  --bz-active: rgba(255, 255, 255, 0.09);
+
+  /* ---- Rol tabanlı renkler ---- */
+  --bz-info: var(--bz-blue-600);
+  --bz-info-strong: var(--bz-blue-400);
+  --bz-info-soft: rgba(47, 123, 255, 0.14);
+  --bz-info-edge: rgba(47, 123, 255, 0.42);
+  --bz-caution: var(--bz-amber-500);
+  --bz-caution-soft: rgba(255, 176, 32, 0.13);
+  --bz-caution-edge: rgba(255, 176, 32, 0.4);
+  --bz-warning: var(--bz-red-500);
+  --bz-warning-soft: rgba(255, 77, 99, 0.13);
+  --bz-warning-edge: rgba(255, 77, 99, 0.4);
+
+  /* ---- Yüzeyler ---- */
+  --bz-bg: var(--bz-graphite-950);
+  --bz-bg-deep: var(--bz-graphite-1000);
+
+  /* ---- Malzeme ağırlığı (kalın = yapısal, ince = içerik) ---- */
+  --bz-blur-bar: blur(20px) saturate(165%);
+  --bz-blur-card: blur(14px) saturate(140%);
+  --bz-shadow-bar: 0 1px 0 rgba(255, 255, 255, 0.06), 0 24px 48px -30px rgba(0, 0, 0, 0.95);
+  --bz-shadow-card: inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 24px 48px -34px rgba(0, 0, 0, 0.9);
+
+  /* ---- Tipografi ---- */
+  --bz-font: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --bz-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, 'Liberation Mono',
+    monospace;
+
+  /* Harf aralığı boyuta özgü: büyük başlık sıkışık, küçük etiket ferah */
+  --bz-track-display: -0.035em;
+  --bz-track-title: -0.022em;
+  --bz-track-head: -0.012em;
+  --bz-track-body: 0em;
+  --bz-track-label: 0.075em;
+  --bz-track-micro: 0.1em;
+  --bz-track-mono: 0.005em;
+
+  /* ---- Ritim ---- */
+  --bz-1: 4px;
+  --bz-2: 8px;
+  --bz-3: 12px;
+  --bz-4: 16px;
+  --bz-5: 20px;
+  --bz-6: 24px;
+  --bz-7: 32px;
+  --bz-8: 40px;
+  --bz-9: 56px;
+
+  --bz-r-sm: 6px;
+  --bz-r-md: 10px;
+  --bz-r-lg: 16px;
+  --bz-r-pill: 999px;
+
+  /* ---- Hareket: kritik sönümlü yay, aşım yok ---- */
+  --bz-dur-press: 90ms;
+  --bz-dur-fast: 150ms;
+  --bz-dur-base: 260ms;
+  --bz-dur-slow: 420ms;
+  --bz-spring: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --bz-spring-soft: cubic-bezier(0.33, 1, 0.68, 1);
+
+  /* ---- Katmanlar ---- */
+  --bz-z-sticky: 100;
+  --bz-z-toast: 900;
+  --bz-z-intro: 9999;
+}

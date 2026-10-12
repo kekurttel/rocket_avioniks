@@ -1,0 +1,81 @@
+# Secrets and local environment
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_rsa*
+id_ed25519*
+secrets/
+
+# Local machine / editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*.bak
+*~
+.mxproject
+.brud/
+**/.brud/
+
+# Generated firmware and CMake output
+/build/
+cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/*.o
+**/*.a
+**/*.elf
+**/*.hex
+**/*.dfu
+**/*.bin
+**/*.map
+
+# Python runtime / cache
+**/__pycache__/
+**/.venv/
+**/venv/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node and web build output
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/.cache/
+**/.vite/
+**/coverage/
+*.local
+
+# Machine logs, captured telemetry and generated tests
+*.log
+*.jsonl
+/test-results/
+/groundstation/logs/
+/groundstation/backend/sessions/
+/groundstation/remotion/out/
+
+# Local backups / recovery snapshots
+/backup/
+/Src_Inc_backup_*.tgz
+
+# Personal photo collection and serial-console scratch commands
+/cetin03rocketphotos/
+/precommands.md
+
+# Large downloaded simulator installers/bundles (not project source)
+/UKB Taklit Yazılımı.zip
+/UKB Taklit Yazılımı/*.zip
+/UKB Taklit Yazılımı/*.exe

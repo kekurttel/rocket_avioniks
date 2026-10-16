@@ -288,7 +288,7 @@ def _parse_num(tok):
 
 
 def _parse_pos(s):
-    """Uno pos=41.012170 29.098150 basar: ondalik derece, 6 basamak (~0.11 m).
+    """Uno pos=39.933400 32.859700 basar: ondalik derece, 6 basamak (~0.11 m).
 
     Donus GERCEK e6 tamsayisidir (arayuz /1e6 ile uyumlu):
     int(round(derece*1e6)). Menzil disi, sonsuz/NaN ve 2-jeton-disi

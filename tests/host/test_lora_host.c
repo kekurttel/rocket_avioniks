@@ -40,8 +40,8 @@ static lora_frame_t sample(void)
   f.alt_dm = 12500;       /* 1250.0 m       -> D4 30 00 00 */
   f.vel_cms = -1500;      /* -15.0 m/s      -> 24 FA */
   f.sats = 9u;            /* -> 09 00                */
-  f.lat_e6 = 41012345;    /* 41.012345 deg -> 79 CC 71 02 */
-  f.lon_e6 = 29098765;    /* 29.098765 deg -> 0D 03 BC 01 */
+  f.lat_e6 = 39933400;    /* 39.933400 deg -> D8 55 61 02 */
+  f.lon_e6 = 32859700;    /* 32.859700 deg -> 34 66 F5 01 */
   f.batt_mv = 12250u;     /* 12250        -> DA 2F  */
   f.flags = LORA_F_GPS_FIX | LORA_F_BLUE_LED | LORA_F_RED_LED; /* 0B */
   f.tilt_ddeg = 123u;     /* 12.3 deg     -> 7B 00 */
@@ -56,15 +56,15 @@ static lora_frame_t sample(void)
 static const uint8_t GOLDEN[38] = {
     0xA5, 0x03, 0x34, 0x12, 0x44, 0x33, 0x22, 0x11, 0x03, 0x00,
     0x00, 0x00, 0xD4, 0x30, 0x00, 0x00, 0x24, 0xFA, 0x09, 0x00,
-    0x79, 0xCC, 0x71, 0x02, 0x0D, 0x03, 0xBC, 0x01, 0xDA, 0x2F,
-    0x0B, 0x7B, 0x00, 0x64, 0x00, 0xCE, 0xFF, 0x0B};
+    0xD8, 0x55, 0x61, 0x02, 0x34, 0x66, 0xF5, 0x01, 0xDA, 0x2F,
+    0x0B, 0x7B, 0x00, 0x64, 0x00, 0xCE, 0xFF, 0xA6};
 
 /* Frozen V2 golden image retained to prove decode compatibility. */
 static const uint8_t GOLDEN_V2[36] = {
     0xA5, 0x02, 0x34, 0x12, 0x44, 0x33, 0x22, 0x11, 0x03, 0x00,
-    0x00, 0x00, 0xE2, 0x04, 0x24, 0xFA, 0x09, 0x00, 0x79, 0xCC,
-    0x71, 0x02, 0x0D, 0x03, 0xBC, 0x01, 0xDA, 0x2F, 0x0B, 0x7B,
-    0x00, 0x64, 0x00, 0xCE, 0xFF, 0xEC};
+    0x00, 0x00, 0xE2, 0x04, 0x24, 0xFA, 0x09, 0x00, 0xD8, 0x55,
+    0x61, 0x02, 0x34, 0x66, 0xF5, 0x01, 0xDA, 0x2F, 0x0B, 0x7B,
+    0x00, 0x64, 0x00, 0xCE, 0xFF, 0x87};
 
 /* Independent additive checksum, deliberately NOT calling lora_crc(). */
 static uint8_t ref_crc(const uint8_t *d, size_t n)
@@ -89,8 +89,8 @@ static lora_tlm_t tlm(void)
   t.vel_mps = -15.0f;  /* -> -1500 cm/s (exact)            */
   t.gps_fix = true;
   t.sats = 9u;
-  t.lat_e6 = 41012345;
-  t.lon_e6 = 29098765;
+  t.lat_e6 = 39933400;
+  t.lon_e6 = 32859700;
   t.batt_mv = 12250u;
   t.flags = LORA_F_GPS_FIX;
   t.tilt_valid = true;
@@ -120,16 +120,16 @@ int main(void)
           f[14] == 0x00u && f[15] == 0x00u);     /* 12500 dm */
     CHECK(f[16] == 0x24u && f[17] == 0xFAu);     /* velocity */
     CHECK(f[18] == 0x09u && f[19] == 0x00u);     /* satellites */
-    CHECK(f[20] == 0x79u && f[21] == 0xCCu &&
-          f[22] == 0x71u && f[23] == 0x02u);     /* latitude */
-    CHECK(f[24] == 0x0Du && f[25] == 0x03u &&
-          f[26] == 0xBCu && f[27] == 0x01u);     /* longitude */
+    CHECK(f[20] == 0xD8u && f[21] == 0x55u &&
+          f[22] == 0x61u && f[23] == 0x02u);     /* latitude */
+    CHECK(f[24] == 0x34u && f[25] == 0x66u &&
+          f[26] == 0xF5u && f[27] == 0x01u);     /* longitude */
     CHECK(f[28] == 0xDAu && f[29] == 0x2Fu);     /* battery */
     CHECK(f[30] == 0x0Bu);                       /* flags */
     CHECK(f[31] == 0x7Bu && f[32] == 0x00u);     /* tilt */
     CHECK(f[33] == 0x64u && f[34] == 0x00u);     /* lean X */
     CHECK(f[35] == 0xCEu && f[36] == 0xFFu);     /* lean Y */
-    CHECK(f[37] == 0x0Bu);                       /* CRC */
+    CHECK(f[37] == 0xA6u);                       /* CRC */
   }
 
   /* ================= CRC ================= */
@@ -283,8 +283,8 @@ int main(void)
     /* A stale last-known position must NOT ride along with a dead fix,
      * but the live satellite count still does. */
     t.sats = 12u;
-    t.lat_e6 = 41012345;
-    t.lon_e6 = 29098765;
+    t.lat_e6 = 39933400;
+    t.lon_e6 = 32859700;
     lora_frame_from_tlm(&fr, 8u, 0u, &t);
     CHECK(fr.sats == 12u && fr.lat_e6 == 0 && fr.lon_e6 == 0);
   }

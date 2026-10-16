@@ -134,6 +134,8 @@ state = {
     "alt_m": None,
     "vel_cms": None,
     "sats": None,
+    # Alan adlari geriye uyum icin lat_e5/lon_e5 kalir; olcek artik e6
+    # (1e-6 derece, ~0.11 m): arayuz degeri /1e6 ile dereceye cevirir.
     "lat_e5": None,
     "lon_e5": None,
     "batt_mv": None,
@@ -286,19 +288,31 @@ def _parse_num(tok):
 
 
 def _parse_pos(s):
+    """Uno pos=41.012170 29.098150 basar: ondalik derece, 6 basamak (~0.11 m).
+
+    Donus GERCEK e6 tamsayisidir (arayuz /1e6 ile uyumlu):
+    int(round(derece*1e6)). Menzil disi, sonsuz/NaN ve 2-jeton-disi
+    bicimler None.
+    """
     s = (s or "").strip()
     if s in ("--", ""):
         return None, None
     parts = s.split()
     if len(parts) != 2:
+        # Eski 4-jetonlu "DD MM.SS" bicimi reddedilir (sozlesme: 2 jeton).
         return None, None
     try:
-        # Uno prints "deg  mm.ss" pairs; recover decimal degrees.
-        lat = float(parts[0].split()[0]) if parts[0] else None
-        lon = float(parts[1].split()[0]) if parts[1] else None
-        return lat, lon
+        lat = float(parts[0])
+        lon = float(parts[1])
     except ValueError:
         return None, None
+    # "nan"/"inf" metni float'a donusur ama olcu degildir; JSON'u zehirler.
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return None, None
+    # Menzil kapilari: disi reddedilir (None), asla state'e girmez.
+    if abs(lat) > 90 or abs(lon) > 180:
+        return None, None
+    return int(round(lat * 1e6)), int(round(lon * 1e6))
 
 
 def apply_link(lines):
@@ -407,6 +421,8 @@ def apply_link(lines):
             "seq", "t_ms", "flight_state", "ek7_mode", "alt_m",
             "vel_cms", "sats", "batt_mv", "fix", "led", "pos_raw",
             "tilt_ddeg", "lean_x", "lean_y")})
+        # _parse_pos gercek e6 tamsayi doner; alan adlari geriye uyum icin
+        # lat_e5/lon_e5 kaldi (olcek e6, arayuz /1e6 ile boler).
         lat, lon = _parse_pos(data.get("pos_raw"))
         # Only trust coordinates with an explicit fix flag.
         if state["fix"] and lat is not None:

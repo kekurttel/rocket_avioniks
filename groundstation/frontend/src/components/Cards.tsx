@@ -132,9 +132,15 @@ export function Cards({ state }: CardsProps): ReactNode {
     {
       key: "konum",
       label: "Konum",
-      value: yok ? "VERİ YOK" : konumGecerli ? "GEÇERLİ" : fix ? "GEÇERSİZ" : "FIX YOK",
+      value: yok
+        ? "VERİ YOK"
+        : konumGecerli
+          ? `${formatDeg(lat)}, ${formatDeg(lon)}`
+          : fix
+            ? "GEÇERSİZ"
+            : "FIX YOK",
       foot: konumGecerli
-        ? `${formatDeg(lat)}, ${formatDeg(lon)}`
+        ? `GNSS kilidi · ${sats ?? "--"} uydu`
         : fix
           ? "koordinatlar paket içinde boş"
           : "uydu kilidi bekleniyor",

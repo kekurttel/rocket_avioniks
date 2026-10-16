@@ -324,7 +324,7 @@ Ana fonksiyonlar + imzalar:
   `gps.c:647-691`; `gps.h:87-101`). `gps_rx_byte` önce UBX tarafını dener (`gps.c:657`), sonra NMEA
   satır birleştirici (`\n` kapatır, `\r` yoksayılır, taşan satır atılır, `$` yeniden senkronlar).
 - Sayı ayrıştırıcılar: `gps_parse_uint` (`gps.c:7-31`, üst sınır 9999999), `gps_parse_double`
-  (`gps.c:34-83`), `gps_parse_degmin` (`gps.c:87-167`, ddmm.mmmm → 1e-5 derece, enlem <90/boylam <180,
+  (`gps.c:34-83`), `gps_parse_degmin` (`gps.c:87-167`, ddmm.mmmm → 1e-6 derece, enlem <90/boylam <180,
   dakika <60, hemisfer zorunlu), `gps_parse_time/date` (`gps.c:171-241`), `gps_hexval`
   (`gps.c:243-258`), `gps_split` (`gps.c:264-309`, XOR checksum doğrulamalı yerinde bölme).
 - `gps_parse_gga` (`gps.c:384-441`): kalite `0` = fix yok; uydu sayısı ≤99; irtifa -1000..100000 m
@@ -545,8 +545,8 @@ Amaç: NEO-6M UBX konfigürasyonu (gen6), GPS D2/D3'te. D2/D3 gerekçesi başlı
 | 12 | 2 | alt_m | i16 LE | irtifa, **TAM METRE**; geçersiz = `0x8000` |
 | 14 | 2 | vel_cms | i16 LE | düşey hız, cm/s; geçersiz = `0x8000` |
 | 16 | 2 | sats | u16 LE | kullanılan uydu, HER ZAMAN canlı (fix şart değil); 0xFFFF rezerve |
-| 18 | 4 | lat_e5 | i32 LE | enlem ×1e-5; 0 = geçersiz |
-| 22 | 4 | lon_e5 | i32 LE | boylam ×1e-5; 0 = geçersiz |
+| 18 | 4 | lat_e6 | i32 LE | enlem ×1e-6; 0 = geçersiz |
+| 22 | 4 | lon_e6 | i32 LE | boylam ×1e-6; 0 = geçersiz |
 | 26 | 2 | batt_mv | u16 LE | batarya mV; 0 = bilinmiyor (bu derlemede ADC yok, hep 0, `Src/main.c:2376`) |
 | 28 | 1 | flags | u8 | bit0 gps_fix, bit1 mavi, bit2 sarı, bit3 kırmızı |
 | 29 | 1 | crc | u8 | `sum(bayt[0..28]) mod 256` |

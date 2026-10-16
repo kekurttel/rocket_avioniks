@@ -55,8 +55,8 @@ static void t_gga(void)
   feed_all(&g, GGA_FIX, 1000);
   CHECK(g.present && g.fix && g.valid);
   CHECK(gps_has_fix(&g, 1000));
-  CHECK(g.lat_e5 == 4811730);  /* 48 + 7.038/60 */
-  CHECK(g.lon_e5 == 1151667);  /* 11 + 31/60 */
+  CHECK(g.lat_e6 == 48117300);  /* 48 + 7.038/60 */
+  CHECK(g.lon_e6 == 11516667);  /* 11 + 31/60 */
   CHECK(fabsf(g.alt_m - 545.4f) < 1e-3f && g.alt_valid);
   CHECK(g.hour == 12 && g.min == 35 && g.sec == 19 && g.time_valid);
   CHECK(g.sats == 8);
@@ -71,7 +71,7 @@ static void t_rmc(void)
   gps_init(&g);
   feed_all(&g, RMC_FIX, 2000);
   CHECK(g.present && gps_has_fix(&g, 2000));
-  CHECK(g.lat_e5 == 4811730 && g.lon_e5 == 1151667);
+  CHECK(g.lat_e6 == 48117300 && g.lon_e6 == 11516667);
   CHECK(g.speed_valid && fabsf(g.speed_mps - 22.4f * 0.514444f) < 1e-3f);
   CHECK(g.course_valid && fabsf(g.course_deg - 84.4f) < 1e-3f);
   CHECK(g.date_valid && g.day == 23 && g.mon == 3 && g.year == 94);
@@ -87,7 +87,7 @@ static void t_badcs(void)
            "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*00\r\n",
            3000);
   CHECK(!g.present && !g.fix && !g.valid && g.sats == 0);
-  CHECK(g.lat_e5 == 0 && g.lon_e5 == 0 && !g.alt_valid);
+  CHECK(g.lat_e6 == 0 && g.lon_e6 == 0 && !g.alt_valid);
   /* A later good sentence still works (no poisoned state). */
   feed_all(&g, GGA_FIX, 3100);
   CHECK(gps_has_fix(&g, 3100));
@@ -104,7 +104,7 @@ static void t_malformed(void)
            4000);
   CHECK(g.present);              /* framed + checksummed: module is there */
   CHECK(!g.fix && !g.valid);     /* but never a fix from garbage */
-  CHECK(g.lat_e5 == 0 && g.lon_e5 == 0);
+  CHECK(g.lat_e6 == 0 && g.lon_e6 == 0);
   /* Non-numeric garbage in a required field: same outcome. */
   feed_all(&g, "$GPRMC,123519,A,abcd,N,01131.000,E,022.4,084.4,230394,,*00\r\n",
            4100); /* bad checksum on purpose too */
@@ -121,7 +121,7 @@ static void t_incomplete(void)
   feed_all(&g, half, 5000);
   CHECK(!g.present && !g.fix);
   feed_all(&g, "5.4,M,46.9,M,,*47\r\n", 5050);
-  CHECK(gps_has_fix(&g, 5050) && g.lat_e5 == 4811730);
+  CHECK(gps_has_fix(&g, 5050) && g.lat_e6 == 48117300);
   /* A lone '$' mid-line resyncs (aborts the partial sentence). */
   feed_all(&g, "$GPGGA,000000,,,,,,0,00,99.9,,,,,,*00", 5100); /* no \n yet */
   feed_all(&g, "$GPGGA,123519,,,,,,0,00,99.9,,,,,,*50\r\n", 5150);
@@ -138,7 +138,7 @@ static void t_nofix(void)
   CHECK(g.present && !g.fix && !g.valid && !gps_has_fix(&g, 6000));
   feed_all(&g, "$GPRMC,123519,V,,,,,,,230394,,,*1F\r\n", 6100);
   CHECK(g.present && !g.fix && !g.valid);
-  CHECK(g.lat_e5 == 0 && g.lon_e5 == 0 && !g.alt_valid && !g.speed_valid);
+  CHECK(g.lat_e6 == 0 && g.lon_e6 == 0 && !g.alt_valid && !g.speed_valid);
   /* A fix followed by no-fix clears validity (stale data never served). */
   feed_all(&g, GGA_FIX, 6200);
   CHECK(gps_has_fix(&g, 6200));
@@ -156,15 +156,15 @@ static void t_hemi(void)
            "$GPGGA,123519,4807.038,S,01131.000,W,1,08,0.9,545.4,M,46.9,M,,*48\r\n",
            7000);
   CHECK(gps_has_fix(&g, 7000));
-  CHECK(g.lat_e5 == -4811730 && g.lon_e5 == -1151667);
+  CHECK(g.lat_e6 == -48117300 && g.lon_e6 == -11516667);
   gps_t h;
   gps_init(&h);
   feed_all(&h,
            "$GPRMC,083559,A,3351.850,S,15112.400,W,000.5,054.7,030303,011.3,E*73\r\n",
            7100);
   CHECK(gps_has_fix(&h, 7100));
-  CHECK(h.lat_e5 == -3386417);  /* -(33 + 51.85/60) */
-  CHECK(h.lon_e5 == -15120667); /* -(151 + 12.4/60) */
+  CHECK(h.lat_e6 == -33864167);  /* -(33 + 51.85/60) */
+  CHECK(h.lon_e6 == -151206667); /* -(151 + 12.4/60) */
   printf("  hemispheres ok\n");
 }
 
@@ -200,7 +200,7 @@ static void t_mixed(void)
   feed_all(&g, GGA_FIX, 8100);
   feed_all(&g, RMC_FIX, 8200);
   CHECK(gps_has_fix(&g, 8200));
-  CHECK(g.lat_e5 == 4811730 && g.sats == 8);
+  CHECK(g.lat_e6 == 48117300 && g.sats == 8);
   CHECK(g.speed_valid && g.course_valid && g.date_valid);
   CHECK(g.last_fix_ms == 8200); /* RMC refreshed the fix */
   printf("  mixed ok\n");
@@ -224,7 +224,7 @@ static void t_chunked(void)
     feed_chunked(&g, stream, 9000, chunk);
     CHECK(g.present == ref.present && g.fix == ref.fix &&
           g.valid == ref.valid);
-    CHECK(g.lat_e5 == ref.lat_e5 && g.lon_e5 == ref.lon_e5 &&
+    CHECK(g.lat_e6 == ref.lat_e6 && g.lon_e6 == ref.lon_e6 &&
           g.sats == ref.sats);
     CHECK(fabsf(g.alt_m - ref.alt_m) < 1e-6f);
     CHECK(fabsf(g.speed_mps - ref.speed_mps) < 1e-6f);
@@ -266,7 +266,7 @@ static void t_garbage_storm(void)
   feed_all(&g, "xyz*12\r", 10300);
   feed_all(&g, "\n", 10400);
   CHECK(!g.present && !g.fix && !g.valid);
-  CHECK(g.lat_e5 == 0 && g.lon_e5 == 0 && g.sats == 0);
+  CHECK(g.lat_e6 == 0 && g.lon_e6 == 0 && g.sats == 0);
   CHECK(!g.alt_valid && !g.speed_valid && !g.time_valid);
   CHECK(g.ack_seq == 0);
   /* İkili çöp (kopuk kablonun ürettiği 0xB5/0xFF/0x00/NUL dahil): atılır. */
@@ -280,10 +280,10 @@ static void t_garbage_storm(void)
     gps_rx_byte(&g, (uint8_t)'\n', 10500);
   }
   CHECK(!g.present && !g.fix && !g.valid);
-  CHECK(g.lat_e5 == 0 && g.lon_e5 == 0 && g.sats == 0);
+  CHECK(g.lat_e6 == 0 && g.lon_e6 == 0 && g.sats == 0);
   /* Fırtına sonrası sağlam cümle: ayrıştırıcı zehirlenmemiş. */
   feed_all(&g, GGA_FIX, 10600);
-  CHECK(gps_has_fix(&g, 10600) && g.lat_e5 == 4811730 && g.sats == 8);
+  CHECK(gps_has_fix(&g, 10600) && g.lat_e6 == 48117300 && g.sats == 8);
   printf("  garbage-storm ok\n");
 }
 
@@ -294,7 +294,7 @@ static void t_garbage_after_fix(void)
   gps_init(&g);
   feed_all(&g, GGA_FIX, 11000);
   CHECK(gps_has_fix(&g, 11000));
-  int32_t lat = g.lat_e5, lon = g.lon_e5;
+  int32_t lat = g.lat_e6, lon = g.lon_e6;
   uint8_t sats = g.sats;
   uint32_t fix_ms = g.last_fix_ms;
   /* Bozuk kablo: yarım UBX + yanlış checksum + ikili gürültü. */
@@ -314,7 +314,7 @@ static void t_garbage_after_fix(void)
   }
   gps_rx_byte(&g, (uint8_t)'\n', 11100);
   CHECK(g.present && g.fix && g.valid); /* taze fix hâlâ geçerli */
-  CHECK(g.lat_e5 == lat && g.lon_e5 == lon && g.sats == sats);
+  CHECK(g.lat_e6 == lat && g.lon_e6 == lon && g.sats == sats);
   CHECK(g.last_fix_ms == fix_ms); /* çöp fix saatini oynatamaz */
   CHECK(gps_has_fix(&g, 11100));
   printf("  garbage-after-fix ok\n");
@@ -334,7 +334,7 @@ static void t_ubx_abort_resync(void)
   }
   CHECK(!g.present);
   feed_all(&g, GGA_FIX, 12100); /* '$' yarım UBX'i bozar, cümle işlenir */
-  CHECK(gps_has_fix(&g, 12100) && g.lat_e5 == 4811730);
+  CHECK(gps_has_fix(&g, 12100) && g.lat_e6 == 48117300);
   /* Cümle ortasına karışan ikili baytlar atılır, checksum tutar. */
   gps_t h;
   gps_init(&h);
@@ -349,7 +349,7 @@ static void t_ubx_abort_resync(void)
     }
     feed_all(&h, post, 12200);
   }
-  CHECK(gps_has_fix(&h, 12200) && h.lat_e5 == 4811730 && h.sats == 8);
+  CHECK(gps_has_fix(&h, 12200) && h.lat_e6 == 48117300 && h.sats == 8);
   printf("  ubx-abort-resync ok\n");
 }
 

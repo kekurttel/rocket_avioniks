@@ -130,8 +130,8 @@ size_t lora_build(uint8_t *out, size_t cap, const lora_frame_t *in)
   put_i32(out, LORA_OFF_ALT_DM, in->alt_dm);
   put_i16(out, LORA_OFF_VEL_CMS, in->vel_cms);
   put_u16(out, LORA_OFF_SATS, in->sats);
-  put_i32(out, LORA_OFF_LAT_E5, in->lat_e5);
-  put_i32(out, LORA_OFF_LON_E5, in->lon_e5);
+  put_i32(out, LORA_OFF_LAT_E6, in->lat_e6);
+  put_i32(out, LORA_OFF_LON_E6, in->lon_e6);
   put_u16(out, LORA_OFF_BATT_MV, in->batt_mv);
   put_u8(out, LORA_OFF_FLAGS, in->flags);
   put_u16(out, LORA_OFF_TILT, in->tilt_ddeg);
@@ -236,8 +236,8 @@ bool lora_parse(const uint8_t *f, size_t n, lora_frame_t *out)
     out->alt_m = dm_to_m_compat(out->alt_dm);
     out->vel_cms = (int16_t)read_u16_le(f, 16u);
     out->sats = read_u16_le(f, 18u);
-    out->lat_e5 = (int32_t)read_u32_le(f, 20u);
-    out->lon_e5 = (int32_t)read_u32_le(f, 24u);
+    out->lat_e6 = (int32_t)read_u32_le(f, 20u);
+    out->lon_e6 = (int32_t)read_u32_le(f, 24u);
     out->batt_mv = read_u16_le(f, 28u);
     out->flags = f[30u];
     out->tilt_ddeg = read_u16_le(f, 31u);
@@ -253,8 +253,8 @@ bool lora_parse(const uint8_t *f, size_t n, lora_frame_t *out)
                    ? LORA_ALT_DM_INVALID : (int32_t)legacy_alt * 10;
   out->vel_cms = (int16_t)read_u16_le(f, 14u);
   out->sats = read_u16_le(f, 16u);
-  out->lat_e5 = (int32_t)read_u32_le(f, 18u);
-  out->lon_e5 = (int32_t)read_u32_le(f, 22u);
+  out->lat_e6 = (int32_t)read_u32_le(f, 18u);
+  out->lon_e6 = (int32_t)read_u32_le(f, 22u);
   out->batt_mv = read_u16_le(f, 26u);
   out->flags = f[28u];
   if (ver == LORA_VER_V2)
@@ -345,8 +345,8 @@ void lora_frame_from_tlm(lora_frame_t *out, uint16_t seq, uint32_t t_ms,
    * sentinel only). Position stays fix-gated: without a fix lat/lon read
    * 0/0 ("no position") so a stale last-known fix can never ride along. */
   out->sats = in->sats;
-  out->lat_e5 = in->gps_fix ? in->lat_e5 : LORA_I32_NOPOS;
-  out->lon_e5 = in->gps_fix ? in->lon_e5 : LORA_I32_NOPOS;
+  out->lat_e6 = in->gps_fix ? in->lat_e6 : LORA_I32_NOPOS;
+  out->lon_e6 = in->gps_fix ? in->lon_e6 : LORA_I32_NOPOS;
   out->batt_mv = in->batt_mv;
   out->flags = in->flags;
   /* Egiklik: derece -> decidegree yuvarla (aralikta eski davranis aynen).

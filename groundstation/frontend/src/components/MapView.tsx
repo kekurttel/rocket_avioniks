@@ -7,7 +7,9 @@ import { palette } from "../theme";
 
 // Paylaşılan tipe uyumlu, bağımsız derlenebilen yedek arayüz (tüm alanlar opsiyonel).
 interface YedekTelemetri {
+  /** Enlem: e6 (1e-6°) tamsayı; alan adı tel uyumluluğu için lat_e5. */
   lat_e5?: number | null;
+  /** Boylam: e6 (1e-6°) tamsayı; alan adı tel uyumluluğu için lon_e5. */
   lon_e5?: number | null;
   fix?: boolean;
   stale?: boolean;
@@ -25,8 +27,8 @@ function gecerliNokta(s: GirisDurumu | null | undefined): [number, number] | nul
   if (!s) return null;
   if (s.fix !== true) return null;
   if (s.lat_e5 == null || s.lon_e5 == null) return null;
-  const lat = s.lat_e5 / 1e5;
-  const lon = s.lon_e5 / 1e5;
+  const lat = s.lat_e5 / 1e6;
+  const lon = s.lon_e5 / 1e6;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
   return [lat, lon];
@@ -184,7 +186,7 @@ export default function MapView({ state }: MapViewProps) {
         </button>
         {sonKonum !== null ? (
           <span className="bz-map__coords">
-            {sonKonum[0].toFixed(5)}, {sonKonum[1].toFixed(5)}
+            {sonKonum[0].toFixed(6)}, {sonKonum[1].toFixed(6)}
           </span>
         ) : (
           <span className="bz-map__coords">konum yok</span>

@@ -11,9 +11,10 @@ export function formatKb(bytes: number | null | undefined): string {
   return `${(bytes / 1024).toFixed(0)} KB`;
 }
 
-export function formatDeg(e5: number | null | undefined, digits = 5): string {
-  if (e5 === null || e5 === undefined || !Number.isFinite(e5)) return "--";
-  return (e5 / 1e5).toFixed(digits);
+/** e6 (1e-6°) tamsayı, 6 basamak. */
+export function formatDeg(v: number | null | undefined, digits = 6): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "--";
+  return (v / 1e6).toFixed(digits);
 }
 
 export function fixed(v: number | null | undefined, digits: number): string {

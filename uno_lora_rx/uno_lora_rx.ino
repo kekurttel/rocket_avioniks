@@ -39,7 +39,7 @@
  * Current frame V3: 38 bytes, little-endian. Legacy V1 (30 B) and V2 (36 B)
  * remain accepted. V3 altitude is signed decimetres (int32) to retain 0.1 m:
  *   0 A5, 1 version 03, 2 seq u16, 4 t_ms u32, 8 flight, 10 ek7 mode,
- *   12 alt_dm i32, 16 vel_cms i16, 18 sats u16, 20 lat_e5 i32, 24 lon_e5 i32,
+ *   12 alt_dm i32, 16 vel_cms i16, 18 sats u16, 20 lat_e6 i32, 24 lon_e6 i32,
  *   28 batt_mv u16, 30 flags, 31 tilt_ddeg u16, 33/35 lean i16, 37 CRC.
  */
 
@@ -136,19 +136,22 @@ static void put_alt_dm(int32_t dm)
   put(F("m"));
 }
 
-/* roket pozisyonunu basit decimal yaz (5e-5 derece birimi) */
-static void put_coord(int32_t e5)
+/* roket pozisyonunu ondalik derece yaz: e6, 6 decimals (~0.11 m) */
+static void put_coord(int32_t v)
 {
-  uint32_t a = (e5 < 0) ? (uint32_t)(-e5) : (uint32_t)e5;
-  uint32_t deg = a / 100000u;
-  uint32_t min = (a % 100000u) / 10u;      /* 1e-5 -> 1e-3 dk */
-  put_u32(deg);
-  put(deg < 10u ? "  " : " ");
-  put_u32(min / 100u);
+  uint32_t a = (v < 0) ? (uint32_t)(-v) : (uint32_t)v;
+  uint32_t tamsayi = a / 1000000u;
+  uint32_t kesir = a % 1000000u;
+  char f[7];
+  put_u32(tamsayi);
   put(F("."));
-  uint32_t f = min % 100u;
-  Serial.write((char)('0' + (f / 10u)));
-  Serial.write((char)('0' + (f % 10u)));
+  for (uint8_t i = 0u; i < 6u; i++)
+  {
+    f[5u - i] = (char)('0' + (kesir % 10u));
+    kesir /= 10u;
+  }
+  f[6] = '\0';
+  put(f);
 }
 
 /* CRC: 0..n-1 bayt toplami mod 256. n = cerceve boyu - 1 (versiyona gore). */

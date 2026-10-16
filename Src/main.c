@@ -682,25 +682,25 @@ static void diag_uart_tenths(int32_t t, bool plus)
   diag_uart_uint32(a % 10U);
 }
 
-/* GPS coordinate in 1e-5 deg, e.g. 4811730 -> "+48.11730". Five decimals
- * (~1.1 m) match the parser's rounding; zero-padded fraction keeps columns
+/* GPS coordinate in 1e-6 deg, e.g. 48117300 -> "+48.117300". Six decimals
+ * (~0.11 m) match the parser's rounding; zero-padded fraction keeps columns
  * aligned in the TUI. */
-static void diag_uart_coord(int32_t e5)
+static void diag_uart_coord(int32_t e6)
 {
-  bool neg = e5 < 0;
-  uint32_t a = neg ? (uint32_t)(-(int64_t)e5) : (uint32_t)e5;
-  uint32_t ip = a / 100000U;
-  uint32_t fp = a % 100000U;
+  bool neg = e6 < 0;
+  uint32_t a = neg ? (uint32_t)(-(int64_t)e6) : (uint32_t)e6;
+  uint32_t ip = a / 1000000U;
+  uint32_t fp = a % 1000000U;
   diag_uart_tx(neg ? "-" : "+");
   diag_uart_uint32(ip);
   diag_uart_tx(".");
-  char f[6];
-  for (int i = 4; i >= 0; i--)
+  char f[7];
+  for (int i = 5; i >= 0; i--)
   {
     f[i] = (char)('0' + (fp % 10U));
     fp /= 10U;
   }
-  f[5] = '\0';
+  f[6] = '\0';
   diag_uart_tx(f);
 }
 
@@ -2419,8 +2419,8 @@ int main(void)
       lora_lt.vel_valid = flight.vel_valid;
       lora_lt.gps_fix = lora_fix;
       lora_lt.sats = gps.sats;
-      lora_lt.lat_e5 = gps.lat_e5;
-      lora_lt.lon_e5 = gps.lon_e5;
+      lora_lt.lat_e6 = gps.lat_e6;
+      lora_lt.lon_e6 = gps.lon_e6;
       lora_lt.batt_mv = 0u; /* no battery ADC in this build: 0 = unknown */
       /* Egiklik v2: tilt_deg/tilt_valid yerelden; lean govde X/Y'nin
        * filtreli vektor buyuklugune bolumu (buyukluk 0 ise 0). Yaw yok. */
@@ -2806,9 +2806,9 @@ int main(void)
           diag_uart_tx("FIX sats=");
           diag_uart_uint32(gps.sats);
           diag_uart_tx(" lat=");
-          diag_uart_coord(gps.lat_e5);
+          diag_uart_coord(gps.lat_e6);
           diag_uart_tx(" lon=");
-          diag_uart_coord(gps.lon_e5);
+          diag_uart_coord(gps.lon_e6);
           if (gps.alt_valid)
           {
             diag_uart_tx(" alt=");

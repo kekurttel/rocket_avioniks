@@ -47,7 +47,7 @@
  *
  * V3 offsets: 0 magic A5; 1 version 03; 2 seq u16; 4 tick_ms u32;
  * 8 flight_state u16; 10 ek7_mode u16; 12 alt_dm i32; 16 vel_cms i16;
- * 18 sats u16; 20 lat_e5 i32; 24 lon_e5 i32; 28 batt_mv u16; 30 flags u8;
+ * 18 sats u16; 20 lat_e6 i32; 24 lon_e6 i32; 28 batt_mv u16; 30 flags u8;
  * 31 tilt_ddeg u16; 33 lean_x i16; 35 lean_y i16; 37 CRC u8 (sum 0..36).
  * All fields are written explicitly; no packed C struct reaches the wire.
  * Altitude is relative to the calibrated launch/reference pressure, NOT sea
@@ -122,8 +122,8 @@ extern "C" {
 #define LORA_OFF_ALT_M LORA_OFF_ALT_DM /* current V3 field offset; legacy parsing is versioned */
 #define LORA_OFF_VEL_CMS (16u)
 #define LORA_OFF_SATS (18u)
-#define LORA_OFF_LAT_E5 (20u)
-#define LORA_OFF_LON_E5 (24u)
+#define LORA_OFF_LAT_E6 (20u)
+#define LORA_OFF_LON_E6 (24u)
 #define LORA_OFF_BATT_MV (28u)
 #define LORA_OFF_FLAGS (30u)
 #define LORA_OFF_TILT (31u)
@@ -144,7 +144,7 @@ extern "C" {
  * (eski davranis aynen), disinda/NaN/inf'de gozcu (doyurma YOK). */
 #define LORA_I16_INVALID ((int16_t)0x8000)
 #define LORA_U16_NOSATS (0xFFFFu) /* reserved; live counts always pass */
-#define LORA_I32_NOPOS (0)       /* lat_e5 / lon_e5 == 0 means invalid */
+#define LORA_I32_NOPOS (0)       /* lat_e6 / lon_e6 == 0 means invalid */
 #define LORA_U16_NOBATT (0u)     /* battery millivolts unknown */
 /* Egiklik (tilt) "veri yok": decidegree araligi 0..1800 disinda. */
 #define LORA_TILT_INVALID (0xFFFFu)
@@ -248,9 +248,9 @@ _Static_assert(LORA_OFF_FLIGHT_STATE + 2u == LORA_OFF_EK7_MODE, "state/mode gap"
 _Static_assert(LORA_OFF_EK7_MODE + 2u == LORA_OFF_ALT_DM, "mode/alt gap");
 _Static_assert(LORA_OFF_ALT_DM + 4u == LORA_OFF_VEL_CMS, "alt/vel gap");
 _Static_assert(LORA_OFF_VEL_CMS + 2u == LORA_OFF_SATS, "vel/sats gap");
-_Static_assert(LORA_OFF_SATS + 2u == LORA_OFF_LAT_E5, "sats/lat gap");
-_Static_assert(LORA_OFF_LAT_E5 + 4u == LORA_OFF_LON_E5, "lat/lon gap");
-_Static_assert(LORA_OFF_LON_E5 + 4u == LORA_OFF_BATT_MV, "lon/batt gap");
+_Static_assert(LORA_OFF_SATS + 2u == LORA_OFF_LAT_E6, "sats/lat gap");
+_Static_assert(LORA_OFF_LAT_E6 + 4u == LORA_OFF_LON_E6, "lat/lon gap");
+_Static_assert(LORA_OFF_LON_E6 + 4u == LORA_OFF_BATT_MV, "lon/batt gap");
 _Static_assert(LORA_OFF_BATT_MV + 2u == LORA_OFF_FLAGS, "batt/flags gap");
 _Static_assert(LORA_OFF_FLAGS + 1u == LORA_OFF_TILT, "flags/tilt gap");
 _Static_assert(LORA_OFF_TILT + 2u == LORA_OFF_LEANX, "tilt/leanx gap");
@@ -258,9 +258,10 @@ _Static_assert(LORA_OFF_LEANX + 2u == LORA_OFF_LEANY, "leanx/leany gap");
 _Static_assert(LORA_ALT_DM_INVALID == INT32_MIN, "V3 altitude sentinel changed");
 
 /* ---------------- Plain, HAL-free frame description ----------------
- * Every field is already in its WIRE UNIT (metres, cm/s, 1e-5 degrees,
- * millivolts) and every "no data" case is already a sentinel, so this struct
- * can be filled by a host test and by the target alike. No packing attributes:
+ * Every field is already in its WIRE UNIT (metres, cm/s, 1e-6 deg
+ * (microdegree), millivolts) and every "no data" case is already a sentinel,
+ * so this struct can be filled by a host test and by the target alike. No
+ * packing attributes:
  * lora_build() writes bytes explicitly, so compiler layout is irrelevant. */
 typedef struct
 {
@@ -272,8 +273,8 @@ typedef struct
   int32_t alt_dm; /* V3 signed decimetres (0.1 m), INT32_MIN = invalid */
   int16_t vel_cms;
   uint16_t sats;
-  int32_t lat_e5;
-  int32_t lon_e5;
+  int32_t lat_e6;
+  int32_t lon_e6;
   uint16_t batt_mv;
   uint8_t flags;
   uint16_t tilt_ddeg; /* decidegree 0..1800; 0xFFFF = gecersiz */
@@ -293,8 +294,8 @@ typedef struct
   float vel_mps;
   bool gps_fix;
   uint16_t sats;
-  int32_t lat_e5;
-  int32_t lon_e5;
+  int32_t lat_e6;
+  int32_t lon_e6;
   uint16_t batt_mv;
   uint8_t flags;
   /* Egiklik: derece cinsinden aci (0 = dikey), tilt_valid false ise yok

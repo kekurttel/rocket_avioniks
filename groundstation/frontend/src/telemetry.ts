@@ -10,7 +10,9 @@ export interface TelemetryState {
   alt_m: number | null;
   vel_cms: number | null;
   sats: number | null;
+  /** Enlem: e6 (1e-6°) tamsayı; alan adı tel/WS uyumluluğu için lat_e5. */
   lat_e5: number | null;
+  /** Boylam: e6 (1e-6°) tamsayı; alan adı tel/WS uyumluluğu için lon_e5. */
   lon_e5: number | null;
   /** Paket şemasında alan var, içerik backend tarafından doldurulmuyor: hep null. */
   batt_mv: number | null;

@@ -84,6 +84,16 @@ class TestGroundStationProtocol(unittest.TestCase):
         self.assertEqual(app.state["gaps"], 0)
         self.assertAlmostEqual(app.state["alt_m"], 12.4)
 
+    def test_decimal_position_becomes_true_e6_ints(self):
+        self.assertEqual(app._parse_pos("41.01217 29.09815"),
+                         (41012170, 29098150))
+        self.assertEqual(app._parse_pos("-33.86514 -151.20733"),
+                         (-33865140, -151207330))
+        self.assertEqual(app._parse_pos("41 00.73 29 05.89"), (None, None))
+        self.assertEqual(app._parse_pos("91.0 29.0"), (None, None))
+        self.assertEqual(app._parse_pos("41.0 181.0"), (None, None))
+        self.assertEqual(app._parse_pos("--"), (None, None))
+
 
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False).result

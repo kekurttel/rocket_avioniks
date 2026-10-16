@@ -82,10 +82,10 @@ static bool gps_parse_double(const char *s, double *out)
   return true;
 }
 
-/* ddmm.mmmm -> signed decimal degrees * 1e-5. is_lat selects the degree
+/* ddmm.mmmm -> signed decimal degrees * 1e-6. is_lat selects the degree
  * width (2 for latitude, 3 for longitude) and range check. */
 static bool gps_parse_degmin(const char *s, char hemi, bool is_lat,
-                             int32_t *out_e5)
+                             int32_t *out_e6)
 {
   double raw = 0.0;
   if (!gps_parse_double(s, &raw) || raw < 0.0)
@@ -156,12 +156,12 @@ static bool gps_parse_degmin(const char *s, char hemi, bool is_lat,
     }
   }
   double deg = deg_part + min_part / 60.0;
-  /* Round to 1e-5 deg (~1.1 m latitude: below NMEA noise, no fake
-   * precision, exact integer telemetry). */
-  int32_t e5 = (int32_t)(deg * 100000.0 + 0.5);
-  if (out_e5 != NULL)
+  /* Round to 1e-6 deg (~0.11 m latitude: below NMEA fix noise, exact
+   * integer telemetry). */
+  int32_t e6 = (int32_t)(deg * 1000000.0 + 0.5);
+  if (out_e6 != NULL)
   {
-    *out_e5 = (sign < 0) ? -e5 : e5;
+    *out_e6 = (sign < 0) ? -e6 : e6;
   }
   return true;
 }
@@ -327,8 +327,8 @@ void gps_init(gps_t *g)
   g->fix = false;
   g->valid = false;
   g->sats = 0;
-  g->lat_e5 = 0;
-  g->lon_e5 = 0;
+  g->lat_e6 = 0;
+  g->lon_e6 = 0;
   g->alt_m = 0.0f;
   g->alt_valid = false;
   g->speed_mps = 0.0f;
@@ -428,8 +428,8 @@ static void gps_parse_gga(gps_t *g, char *f[], uint8_t nf, uint32_t now_ms)
   }
   double alt = 0.0;
   bool alt_ok = gps_parse_double(al, &alt) && alt > -1000.0 && alt < 100000.0;
-  g->lat_e5 = lat;
-  g->lon_e5 = lon;
+  g->lat_e6 = lat;
+  g->lon_e6 = lon;
   g->fix = true;
   g->valid = true;
   g->last_fix_ms = now_ms;
@@ -492,8 +492,8 @@ static void gps_parse_rmc(gps_t *g, char *f[], uint8_t nf, uint32_t now_ms)
   double spd = 0.0, crs = 0.0;
   bool spd_ok = gps_parse_double(sp, &spd) && spd >= 0.0 && spd < 5000.0;
   bool crs_ok = gps_parse_double(co, &crs) && crs >= 0.0 && crs < 360.0;
-  g->lat_e5 = lat;
-  g->lon_e5 = lon;
+  g->lat_e6 = lat;
+  g->lon_e6 = lon;
   g->fix = true;
   g->valid = true;
   g->last_fix_ms = now_ms;

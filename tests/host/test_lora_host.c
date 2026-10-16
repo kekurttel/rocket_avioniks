@@ -40,8 +40,8 @@ static lora_frame_t sample(void)
   f.alt_dm = 12500;       /* 1250.0 m       -> D4 30 00 00 */
   f.vel_cms = -1500;      /* -15.0 m/s      -> 24 FA */
   f.sats = 9u;            /* -> 09 00                */
-  f.lat_e5 = 41012345;    /* 41.012345 deg -> 79 CC 71 02 */
-  f.lon_e5 = 29098765;    /* 29.098765 deg -> 0D 03 BC 01 */
+  f.lat_e6 = 41012345;    /* 41.012345 deg -> 79 CC 71 02 */
+  f.lon_e6 = 29098765;    /* 29.098765 deg -> 0D 03 BC 01 */
   f.batt_mv = 12250u;     /* 12250        -> DA 2F  */
   f.flags = LORA_F_GPS_FIX | LORA_F_BLUE_LED | LORA_F_RED_LED; /* 0B */
   f.tilt_ddeg = 123u;     /* 12.3 deg     -> 7B 00 */
@@ -89,8 +89,8 @@ static lora_tlm_t tlm(void)
   t.vel_mps = -15.0f;  /* -> -1500 cm/s (exact)            */
   t.gps_fix = true;
   t.sats = 9u;
-  t.lat_e5 = 41012345;
-  t.lon_e5 = 29098765;
+  t.lat_e6 = 41012345;
+  t.lon_e6 = 29098765;
   t.batt_mv = 12250u;
   t.flags = LORA_F_GPS_FIX;
   t.tilt_valid = true;
@@ -195,7 +195,7 @@ int main(void)
           LORA_OFF_T_MS == 4u && LORA_OFF_FLIGHT_STATE == 8u &&
           LORA_OFF_EK7_MODE == 10u && LORA_OFF_ALT_DM == 12u &&
           LORA_OFF_VEL_CMS == 16u && LORA_OFF_SATS == 18u &&
-          LORA_OFF_LAT_E5 == 20u && LORA_OFF_LON_E5 == 24u &&
+          LORA_OFF_LAT_E6 == 20u && LORA_OFF_LON_E6 == 24u &&
           LORA_OFF_BATT_MV == 28u && LORA_OFF_FLAGS == 30u &&
           LORA_OFF_TILT == 31u && LORA_OFF_LEANX == 33u &&
           LORA_OFF_LEANY == 35u && LORA_OFF_CRC == 37u);
@@ -231,7 +231,7 @@ int main(void)
     CHECK(out.flight_state == in.flight_state && out.ek7_mode == in.ek7_mode);
     CHECK(out.alt_m == in.alt_m && out.vel_cms == in.vel_cms);
     CHECK(out.sats == in.sats);
-    CHECK(out.lat_e5 == in.lat_e5 && out.lon_e5 == in.lon_e5);
+    CHECK(out.lat_e6 == in.lat_e6 && out.lon_e6 == in.lon_e6);
     CHECK(out.batt_mv == in.batt_mv && out.flags == in.flags);
     CHECK(out.tilt_ddeg == in.tilt_ddeg);
     CHECK(out.lean_x == in.lean_x && out.lean_y == in.lean_y);
@@ -255,7 +255,7 @@ int main(void)
     CHECK(fr.tilt_ddeg == LORA_TILT_INVALID);
     CHECK(fr.lean_x == 0 && fr.lean_y == 0);
     CHECK(fr.sats == 9u); /* tlm() count passes straight through, no fix */
-    CHECK(fr.lat_e5 == 0 && fr.lon_e5 == 0);
+    CHECK(fr.lat_e6 == 0 && fr.lon_e6 == 0);
     CHECK(fr.batt_mv == 0u);
     memset(&out, 0, sizeof out);
     CHECK(lora_build(f, sizeof f, &fr) == LORA_FRAME_LEN);
@@ -265,7 +265,7 @@ int main(void)
     CHECK(out.tilt_ddeg == LORA_TILT_INVALID);
     CHECK(out.lean_x == 0 && out.lean_y == 0);
     CHECK(out.sats == 9u);
-    CHECK(out.lat_e5 == 0 && out.lon_e5 == 0);
+    CHECK(out.lat_e6 == 0 && out.lon_e6 == 0);
     CHECK(out.batt_mv == 0u);
     CHECK(out.seq == 7u && out.t_ms == 12345u);
     /* The sentinels are visible on the wire at the documented offsets. */
@@ -273,7 +273,7 @@ int main(void)
           f[LORA_OFF_ALT_DM + 2u] == 0x00u && f[LORA_OFF_ALT_DM + 3u] == 0x80u);
     CHECK(f[LORA_OFF_VEL_CMS] == 0x00u && f[LORA_OFF_VEL_CMS + 1u] == 0x80u);
     CHECK(f[LORA_OFF_SATS] == 0x09u && f[LORA_OFF_SATS + 1u] == 0x00u);
-    CHECK(f[LORA_OFF_LAT_E5] == 0x00u && f[LORA_OFF_LON_E5] == 0x00u);
+    CHECK(f[LORA_OFF_LAT_E6] == 0x00u && f[LORA_OFF_LON_E6] == 0x00u);
     CHECK(f[LORA_OFF_BATT_MV] == 0x00u && f[LORA_OFF_FLAGS] == 0x00u);
     /* Egiklik gecersiz: telde 0xFFFF + sifir yon. */
     CHECK(f[LORA_OFF_TILT] == 0xFFu && f[LORA_OFF_TILT + 1u] == 0xFFu);
@@ -283,10 +283,10 @@ int main(void)
     /* A stale last-known position must NOT ride along with a dead fix,
      * but the live satellite count still does. */
     t.sats = 12u;
-    t.lat_e5 = 41012345;
-    t.lon_e5 = 29098765;
+    t.lat_e6 = 41012345;
+    t.lon_e6 = 29098765;
     lora_frame_from_tlm(&fr, 8u, 0u, &t);
-    CHECK(fr.sats == 12u && fr.lat_e5 == 0 && fr.lon_e5 == 0);
+    CHECK(fr.sats == 12u && fr.lat_e6 == 0 && fr.lon_e6 == 0);
   }
 
   /* ================= FLIGHT-CRITICAL: altitude round trip ============
@@ -450,7 +450,7 @@ int main(void)
       CHECK(out.seq == 0u); /* the first packet carries seq 0 */
       CHECK(out.t_ms == 0u);
       CHECK(out.flight_state == t.flight_state);
-      CHECK(out.lat_e5 == t.lat_e5 && out.lon_e5 == t.lon_e5);
+      CHECK(out.lat_e6 == t.lat_e6 && out.lon_e6 == t.lon_e6);
     }
     /* Just before the 100 ms deadline: no packet; the exact deadline sends. */
     CHECK(!lora_poll(LORA_SEND_INTERVAL_MS - 1u, &t, tx, sizeof tx));

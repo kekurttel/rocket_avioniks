@@ -15,7 +15,7 @@
  * - Malformed sentences, bad checksums, incomplete lines, empty required
  *   fields and no-fix sentences update presence bookkeeping only.
  *
- * Coordinates are exposed as int32_t 1e-5 degrees (UBX-style): exact,
+ * Coordinates are exposed as int32_t 1e-6 degrees (microdegree): exact,
  * printf-free, no float formatting needed for telemetry.
  */
 #ifndef GPS_H
@@ -45,9 +45,9 @@ typedef struct
   bool fix;          /* last fix sentence reported a valid fix */
   bool valid;        /* fix && coordinates parsed && in range */
   uint8_t sats;      /* satellites in use (GGA), 0 when unknown */
-  /* Position: signed decimal degrees * 1e-5. Meaningful only if valid. */
-  int32_t lat_e5;
-  int32_t lon_e5;
+  /* Position: signed decimal degrees * 1e-6. Meaningful only if valid. */
+  int32_t lat_e6;
+  int32_t lon_e6;
   /* Altitude (GGA field 9, metres). */
   float alt_m;
   bool alt_valid;
